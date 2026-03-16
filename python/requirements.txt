@@ -1,0 +1,12 @@
+# Install the local RotorLab package and runtime dependencies from pyproject.toml.
+-e .
+
+# Testing
+pytest>=8.3,<9
+pytest-qt>=4.4,<5
+pytest-cov>=5,<6
+pytest-mock>=3.14,<4
+
+# Rust/Python bridge build tooling (for upcoming PyO3 modules)
+maturin>=1.7,<2
+
