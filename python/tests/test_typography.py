@@ -22,6 +22,12 @@ def _ribbon_widgets(window: RotorLabMainWindow) -> tuple[QToolButton, QToolButto
     return large, small, caption
 
 
+def _library_fonts(window: RotorLabMainWindow) -> tuple[QFont, QFont]:
+    header_item = window.orchestrate.library.category_items[0]
+    module_item = window.orchestrate.library.module_items[0]
+    return header_item.font(0), module_item.font(0)
+
+
 @pytest.fixture
 def typography_profile():
     return default_typography_profile()
@@ -77,12 +83,11 @@ def test_typography_roles_mapped_to_core_widgets(window, typography_manager):
         typography_manager.font(TypographyRole.STATUS)
     )
 
-    header_item = window.orchestrate.library.item(0)
-    module_item = window.orchestrate.library.item(1)
-    assert _font_signature(header_item.font()) == _font_signature(
+    header_font, module_font = _library_fonts(window)
+    assert _font_signature(header_font) == _font_signature(
         typography_manager.font(TypographyRole.GROUP_CAPTION)
     )
-    assert _font_signature(module_item.font()) == _font_signature(
+    assert _font_signature(module_font) == _font_signature(
         typography_manager.font(TypographyRole.BODY)
     )
 
@@ -109,8 +114,8 @@ def test_theme_switch_preserves_typography_roles(window):
             "ribbon_small": _font_signature(small.font()),
             "caption": _font_signature(caption.font()),
             "status": _font_signature(window.state_label.font()),
-            "lib_header": _font_signature(window.orchestrate.library.item(0).font()),
-            "lib_item": _font_signature(window.orchestrate.library.item(1).font()),
+            "lib_header": _font_signature(_library_fonts(window)[0]),
+            "lib_item": _font_signature(_library_fonts(window)[1]),
         }
 
     before = snapshot()
@@ -142,4 +147,3 @@ def test_console_and_new_environment_placeholder_typography(window, typography_p
     assert _font_signature(description.font()) == _font_signature(
         typography_manager.font(TypographyRole.BODY)
     )
-
