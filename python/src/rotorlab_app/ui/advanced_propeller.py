@@ -655,12 +655,14 @@ class AdvancedPropellerWorkspace(QWidget):
         self.setObjectName("AdvancedPropellerWorkspace")
         self._session = session
         self._preview_service = PropellerPreviewService(self)
-        self._pending_build_mode = "preview"
-        self._preview_service.preview_started.connect(self._on_preview_started)
-        self._preview_service.preview_ready.connect(self._on_preview_ready)
-        self._preview_service.preview_failed.connect(self._on_preview_failed)
+        self._preview_service.build_started.connect(self._on_build_started)
+        self._preview_service.build_ready.connect(self._on_build_ready)
+        self._preview_service.build_failed.connect(self._on_build_failed)
         self._stage_pages: dict[str, QWidget] = {}
         self._distribution_editors: dict[str, DistributionEditorWidget] = {}
+        self._backend_status_label: QLabel | None = None
+        self._model_summary_label: QLabel | None = None
+        self._section_eta_spin: QDoubleSpinBox | None = None
 
         self.stage_tree = QTreeWidget(self)
         self.stage_tree.setObjectName("PropellerStageTree")
@@ -708,7 +710,11 @@ class AdvancedPropellerWorkspace(QWidget):
             self._session.feature_state.preview_settings.show_mesh,
             self._session.feature_state.preview_settings.show_wireframe,
         )
-        self._request_preview(force_all=True)
+        self._sync_section_eta_constraints()
+        if self._preview_service.using_rust_backend:
+            self._request_build(force_all=True)
+        else:
+            self._show_backend_error(self._preview_service.backend_error)
 
     @property
     def session(self) -> PropellerEnvironmentSession:
@@ -784,14 +790,8 @@ class AdvancedPropellerWorkspace(QWidget):
             typography.apply(widget, role)
 
     def handle_action(self, action_name: str) -> bool:
-        if action_name == "Rebuild Preview":
-            self._request_preview(force_all=True)
-            return True
-        if action_name == "Validate Propeller":
-            self._request_preview(force_all=False)
-            return True
-        if action_name == "Build Exact":
-            self._request_preview(force_all=True, build_mode="exact")
+        if action_name in {"Rebuild Preview", "Rebuild Model", "Validate Propeller"}:
+            self._request_build(force_all=True)
             return True
         if action_name == "Reset View":
             self.viewport.reset_view()
@@ -799,11 +799,16 @@ class AdvancedPropellerWorkspace(QWidget):
             return True
         if action_name == "Toggle Mesh":
             self._session.feature_state.preview_settings.show_mesh = not self._session.feature_state.preview_settings.show_mesh
-            self._request_preview(force_all=False)
+            self.viewport.set_preview_options(
+                self._session.feature_state.preview_settings.show_mesh,
+                self._session.feature_state.preview_settings.show_wireframe,
+            )
+            self.viewport.update()
             return True
         if action_name == "Toggle Sections":
             self._session.feature_state.preview_settings.show_sections = not self._session.feature_state.preview_settings.show_sections
-            self._request_preview(force_all=False)
+            self._session.feature_state.mark_dirty_from_stage("blade_preview")
+            self._request_build(force_all=False)
             return True
         return False
 
@@ -867,16 +872,10 @@ class AdvancedPropellerWorkspace(QWidget):
         state = self._session.feature_state.global_parameters
 
         radius_spin = self._make_double_spin(500.0, 12000.0, state.radius, 1.0)
-        blade_spin = self._make_int_spin(2, 8, state.num_blades)
-        hub_spin = self._make_double_spin(0.10, 0.45, state.hub_radius_ratio, 0.01)
         pitch_spin = self._make_double_spin(-12.0, 12.0, state.pitch_reference_deg, 0.1)
         radius_spin.valueChanged.connect(lambda value: self._update_global("radius", value, "center_surface"))
-        blade_spin.valueChanged.connect(lambda value: self._update_global("num_blades", value, "blade_preview"))
-        hub_spin.valueChanged.connect(lambda value: self._update_global("hub_radius_ratio", value, "center_surface"))
         pitch_spin.valueChanged.connect(lambda value: self._update_global("pitch_reference_deg", value, "section_placement"))
         form_layout.addRow("Radius", radius_spin)
-        form_layout.addRow("Blade Count", blade_spin)
-        form_layout.addRow("Hub Radius Ratio", hub_spin)
         form_layout.addRow("Pitch Ref. (deg)", pitch_spin)
         layout.addWidget(form_container)
 
@@ -902,10 +901,20 @@ class AdvancedPropellerWorkspace(QWidget):
         form_layout = QFormLayout(form_container)
         form_layout.setContentsMargins(12, 12, 12, 12)
         profile = self._session.feature_state.profile_definition
+        camber_combo = self._make_combo(("modified_naca", "parabolic", "elliptic"), profile.camber_family)
+        thickness_combo = self._make_combo(("naca66_like", "ogive", "elliptic"), profile.thickness_family)
         te_spin = self._make_double_spin(0.001, 0.03, profile.trailing_edge_thickness, 0.001)
         le_spin = self._make_double_spin(-0.3, 0.3, profile.leading_edge_bias, 0.01)
+        camber_combo.currentTextChanged.connect(
+            lambda value: self._update_profile("camber_family", value, "profile_configurator")
+        )
+        thickness_combo.currentTextChanged.connect(
+            lambda value: self._update_profile("thickness_family", value, "profile_configurator")
+        )
         te_spin.valueChanged.connect(lambda value: self._update_profile("trailing_edge_thickness", value, "profile_configurator"))
         le_spin.valueChanged.connect(lambda value: self._update_profile("leading_edge_bias", value, "profile_configurator"))
+        form_layout.addRow("Camber Family", camber_combo)
+        form_layout.addRow("Thickness Family", thickness_combo)
         form_layout.addRow("TE Thickness", te_spin)
         form_layout.addRow("LE Bias", le_spin)
         layout.addWidget(form_container)
@@ -932,15 +941,130 @@ class AdvancedPropellerWorkspace(QWidget):
         form_layout = QFormLayout(form_container)
         form_layout.setContentsMargins(12, 12, 12, 12)
         preview = self._session.feature_state.preview_settings
+        minimum_eta = self._session.feature_state.hub_parameters.hub_radius_ratio
         span_spin = self._make_int_spin(8, 40, preview.span_samples)
         chord_spin = self._make_int_spin(12, 64, preview.chord_samples)
-        eta_spin = self._make_double_spin(self._session.feature_state.global_parameters.hub_radius_ratio, 1.0, preview.section_eta, 0.01)
+        eta_spin = self._make_double_spin(minimum_eta, 1.0, preview.section_eta, 0.01)
+        tessellation_rows = self._make_int_spin(12, 120, preview.tessellation_rows)
+        tessellation_cols = self._make_int_spin(24, 180, preview.tessellation_cols)
+        self._section_eta_spin = eta_spin
         span_spin.valueChanged.connect(lambda value: self._update_preview_setting("span_samples", value, "section_placement"))
         chord_spin.valueChanged.connect(lambda value: self._update_preview_setting("chord_samples", value, "section_placement"))
-        eta_spin.valueChanged.connect(lambda value: self._update_preview_setting("section_eta", value, "profile_configurator"))
+        eta_spin.valueChanged.connect(lambda value: self._update_preview_setting("section_eta", value, "section_placement"))
+        tessellation_rows.valueChanged.connect(lambda value: self._update_preview_setting("tessellation_rows", value, "blade_preview"))
+        tessellation_cols.valueChanged.connect(lambda value: self._update_preview_setting("tessellation_cols", value, "blade_preview"))
         form_layout.addRow("Span Samples", span_spin)
         form_layout.addRow("Chord Samples", chord_spin)
         form_layout.addRow("Section eta", eta_spin)
+        form_layout.addRow("Tessellation Rows", tessellation_rows)
+        form_layout.addRow("Tessellation Cols", tessellation_cols)
+        layout.addWidget(form_container)
+        layout.addStretch(1)
+        return page
+
+    def _build_tip_page(self) -> QWidget:
+        page = QWidget(self)
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(8)
+        title = QLabel("Tip Surface", page)
+        title.setObjectName("TipSurfaceTitle")
+        layout.addWidget(title)
+
+        form_container = QFrame(page)
+        form_container.setObjectName("InspectorSection")
+        form_layout = QFormLayout(form_container)
+        form_layout.setContentsMargins(12, 12, 12, 12)
+        tip = self._session.feature_state.tip_parameters
+
+        controls = (
+            ("Closure Bias", "closure_bias", self._make_double_spin(0.05, 0.95, tip.closure_bias, 0.01)),
+            ("Roundness", "roundness", self._make_double_spin(0.05, 1.00, tip.roundness, 0.01)),
+            ("Cap Depth Ratio", "cap_depth_ratio", self._make_double_spin(0.01, 0.25, tip.cap_depth_ratio, 0.005)),
+            ("Cap Length Ratio", "cap_length_ratio", self._make_double_spin(0.01, 0.35, tip.cap_length_ratio, 0.005)),
+            ("Thickness Fade", "tip_thickness_fade", self._make_double_spin(0.10, 1.00, tip.tip_thickness_fade, 0.01)),
+            ("Camber Fade", "tip_camber_fade", self._make_double_spin(0.10, 1.00, tip.tip_camber_fade, 0.01)),
+            ("Rake Fade", "tip_rake_fade", self._make_double_spin(0.00, 1.00, tip.tip_rake_fade, 0.01)),
+        )
+        for label, field_name, spin in controls:
+            spin.valueChanged.connect(
+                lambda value, field_name=field_name: self._update_tip(field_name, value, "tip")
+            )
+            form_layout.addRow(label, spin)
+
+        layout.addWidget(form_container)
+        layout.addStretch(1)
+        return page
+
+    def _build_hub_page(self) -> QWidget:
+        page = QWidget(self)
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(8)
+        title = QLabel("Hub Blend", page)
+        title.setObjectName("HubBlendTitle")
+        layout.addWidget(title)
+
+        form_container = QFrame(page)
+        form_container.setObjectName("InspectorSection")
+        form_layout = QFormLayout(form_container)
+        form_layout.setContentsMargins(12, 12, 12, 12)
+        hub = self._session.feature_state.hub_parameters
+
+        controls = (
+            ("Hub Radius Ratio", "hub_radius_ratio", self._make_double_spin(0.10, 0.45, hub.hub_radius_ratio, 0.01)),
+            ("Hub Length Ratio", "hub_length_ratio", self._make_double_spin(0.08, 0.70, hub.hub_length_ratio, 0.01)),
+            ("Fore Profile Split", "fore_profile_split", self._make_double_spin(0.05, 0.90, hub.fore_profile_split, 0.01)),
+            ("Aft Profile Split", "aft_profile_split", self._make_double_spin(0.05, 0.95, hub.aft_profile_split, 0.01)),
+            ("Root Cutback Start", "root_cutback_start", self._make_double_spin(0.01, 0.60, hub.root_cutback_start, 0.01)),
+            ("Root LE Blend", "root_le_blend_ratio", self._make_double_spin(0.0, 0.20, hub.root_le_blend_ratio, 0.005)),
+            ("Root TE Blend", "root_te_blend_ratio", self._make_double_spin(0.0, 0.20, hub.root_te_blend_ratio, 0.005)),
+        )
+        for label, field_name, spin in controls:
+            spin.valueChanged.connect(
+                lambda value, field_name=field_name: self._update_hub(field_name, value, "hub")
+            )
+            form_layout.addRow(label, spin)
+
+        layout.addWidget(form_container)
+        layout.addStretch(1)
+        return page
+
+    def _build_pattern_page(self) -> QWidget:
+        page = QWidget(self)
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(8)
+        title = QLabel("Pattern", page)
+        title.setObjectName("PatternTitle")
+        layout.addWidget(title)
+
+        form_container = QFrame(page)
+        form_container.setObjectName("InspectorSection")
+        form_layout = QFormLayout(form_container)
+        form_layout.setContentsMargins(12, 12, 12, 12)
+        pattern = self._session.feature_state.pattern_parameters
+
+        blade_spin = self._make_int_spin(2, 8, pattern.num_blades)
+        start_angle_spin = self._make_double_spin(-180.0, 180.0, pattern.start_angle_deg, 1.0)
+        handedness_combo = self._make_combo(("right", "left"), pattern.handedness)
+        axis_combo = self._make_combo(("z",), pattern.axis_convention)
+
+        blade_spin.valueChanged.connect(lambda value: self._update_pattern("num_blades", value, "pattern"))
+        start_angle_spin.valueChanged.connect(
+            lambda value: self._update_pattern("start_angle_deg", value, "pattern")
+        )
+        handedness_combo.currentTextChanged.connect(
+            lambda value: self._update_pattern("handedness", value, "pattern")
+        )
+        axis_combo.currentTextChanged.connect(
+            lambda value: self._update_pattern("axis_convention", value, "pattern")
+        )
+
+        form_layout.addRow("Blade Count", blade_spin)
+        form_layout.addRow("Start Angle", start_angle_spin)
+        form_layout.addRow("Handedness", handedness_combo)
+        form_layout.addRow("Axis", axis_combo)
         layout.addWidget(form_container)
         layout.addStretch(1)
         return page
@@ -962,21 +1086,23 @@ class AdvancedPropellerWorkspace(QWidget):
         mesh_check = QCheckBox("Show mesh", form_container)
         wire_check = QCheckBox("Show wireframe", form_container)
         section_check = QCheckBox("Show sections", form_container)
-        backend_label = QLabel(
-            "Backend: Rust extension" if self._preview_service.using_rust_backend else "Backend: Python preview bridge",
-            form_container,
-        )
+        backend_label = QLabel(self._backend_status_text(), form_container)
         backend_label.setObjectName("PropellerBackendLabel")
+        model_summary = QLabel("Awaiting first Rust build.", form_container)
+        model_summary.setWordWrap(True)
+        self._backend_status_label = backend_label
+        self._model_summary_label = model_summary
         mesh_check.setChecked(preview.show_mesh)
         wire_check.setChecked(preview.show_wireframe)
         section_check.setChecked(preview.show_sections)
-        mesh_check.toggled.connect(lambda value: self._update_preview_setting("show_mesh", value, "blade_preview"))
-        wire_check.toggled.connect(lambda value: self._update_preview_setting("show_wireframe", value, "blade_preview"))
-        section_check.toggled.connect(lambda value: self._update_preview_setting("show_sections", value, "blade_preview"))
+        mesh_check.toggled.connect(lambda value: self._toggle_preview_option("show_mesh", value))
+        wire_check.toggled.connect(lambda value: self._toggle_preview_option("show_wireframe", value))
+        section_check.toggled.connect(lambda value: self._toggle_preview_option("show_sections", value, rebuild=True))
         form_layout.addWidget(mesh_check, 0, 0)
         form_layout.addWidget(wire_check, 0, 1)
         form_layout.addWidget(section_check, 1, 0)
         form_layout.addWidget(backend_label, 2, 0, 1, 2)
+        form_layout.addWidget(model_summary, 3, 0, 1, 2)
         layout.addWidget(form_container)
         layout.addStretch(1)
         return page
@@ -1006,15 +1132,23 @@ class AdvancedPropellerWorkspace(QWidget):
         spin.setValue(value)
         return spin
 
+    def _make_combo(self, options: tuple[str, ...], value: str) -> QComboBox:
+        combo = QComboBox(self)
+        combo.addItems(list(options))
+        index = combo.findText(value)
+        if index >= 0:
+            combo.setCurrentIndex(index)
+        return combo
+
     def _update_global(self, field_name: str, value, stage: str) -> None:
         setattr(self._session.feature_state.global_parameters, field_name, value)
         self._session.feature_state.mark_dirty_from_stage(stage)
-        self._request_preview(force_all=False)
+        self._request_build(force_all=False)
 
     def _update_profile(self, field_name: str, value, stage: str) -> None:
         setattr(self._session.feature_state.profile_definition, field_name, value)
         self._session.feature_state.mark_dirty_from_stage(stage)
-        self._request_preview(force_all=False)
+        self._request_build(force_all=False)
 
     def _update_preview_setting(self, field_name: str, value, stage: str) -> None:
         setattr(self._session.feature_state.preview_settings, field_name, value)
@@ -1023,31 +1157,58 @@ class AdvancedPropellerWorkspace(QWidget):
             self._session.feature_state.preview_settings.show_wireframe,
         )
         self._session.feature_state.mark_dirty_from_stage(stage)
-        self._request_preview(force_all=False)
+        self._request_build(force_all=False)
+
+    def _update_tip(self, field_name: str, value, stage: str) -> None:
+        setattr(self._session.feature_state.tip_parameters, field_name, value)
+        self._session.feature_state.mark_dirty_from_stage(stage)
+        self._request_build(force_all=False)
+
+    def _update_hub(self, field_name: str, value, stage: str) -> None:
+        setattr(self._session.feature_state.hub_parameters, field_name, value)
+        self._sync_section_eta_constraints()
+        self._session.feature_state.mark_dirty_from_stage(stage)
+        self._request_build(force_all=False)
+
+    def _update_pattern(self, field_name: str, value, stage: str) -> None:
+        setattr(self._session.feature_state.pattern_parameters, field_name, value)
+        self._session.feature_state.mark_dirty_from_stage(stage)
+        self._request_build(force_all=False)
+
+    def _toggle_preview_option(self, field_name: str, value: bool, rebuild: bool = False) -> None:
+        setattr(self._session.feature_state.preview_settings, field_name, value)
+        self.viewport.set_preview_options(
+            self._session.feature_state.preview_settings.show_mesh,
+            self._session.feature_state.preview_settings.show_wireframe,
+        )
+        if rebuild:
+            self._session.feature_state.mark_dirty_from_stage("blade_preview")
+            self._request_build(force_all=False)
+        else:
+            self.viewport.update()
 
     def _on_distribution_changed(self, _distribution_key: str, stage: str) -> None:
         self._session.feature_state.mark_dirty_from_stage(stage)
         self._refresh_plot_panels()
-        self._request_preview(force_all=False)
+        self._request_build(force_all=False)
 
-    def _request_preview(self, force_all: bool, build_mode: str = "preview") -> None:
-        self._pending_build_mode = build_mode
+    def _request_build(self, force_all: bool) -> None:
+        if not self._preview_service.using_rust_backend:
+            self._show_backend_error(self._preview_service.backend_error)
+            return
         if force_all:
             self._session.feature_state.dirty_stages = list(ACTIVE_PROPELLER_STAGES)
-        self._preview_service.request_preview(
+        self._preview_service.request_build(
             self._session.feature_state,
             list(self._session.feature_state.dirty_stages),
-            build_mode=build_mode,
         )
 
-    def _on_preview_started(self, dirty_stages: list[str]) -> None:
-        label = "exact propeller build" if self._pending_build_mode == "exact" else "propeller preview"
-        verb = "Building" if self._pending_build_mode == "exact" else "Rebuilding"
+    def _on_build_started(self, dirty_stages: list[str]) -> None:
         self.status_message.emit(
-            f"{verb} {label}: " + ", ".join(STAGE_LABELS[stage] for stage in dirty_stages)
+            "Rebuilding propeller model: " + ", ".join(STAGE_LABELS[stage] for stage in dirty_stages)
         )
 
-    def _on_preview_ready(self, result: PropellerPreviewResult) -> None:
+    def _on_build_ready(self, result: PropellerPreviewResult) -> None:
         self._session.last_result = result
         self._session.feature_state.mark_clean(result.built_stages)
         self.section_preview.set_preview_result(result)
@@ -1058,17 +1219,14 @@ class AdvancedPropellerWorkspace(QWidget):
         )
         self._refresh_plot_panels()
         self._refresh_diagnostics()
-        is_exact = self._pending_build_mode == "exact" or result.exact_artifacts.get("mode") == "exact"
-        status_prefix = "Exact propeller build ready" if is_exact else "Propeller preview ready"
+        self._update_model_summary(result)
         self.status_message.emit(
-            f"{status_prefix} ({len(result.mesh.vertices)} verts, {len(result.mesh.faces)} faces)."
+            f"Propeller model ready ({len(result.mesh.vertices)} verts, {len(result.mesh.faces)} faces)."
         )
-        self._pending_build_mode = "preview"
 
-    def _on_preview_failed(self, message: str) -> None:
-        label = "exact propeller build" if self._pending_build_mode == "exact" else "propeller preview"
-        self.status_message.emit(f"{label.capitalize()} failed: {message}")
-        self._pending_build_mode = "preview"
+    def _on_build_failed(self, message: str) -> None:
+        self._show_backend_error(message)
+        self.status_message.emit(f"Propeller build failed: {message}")
 
     def _refresh_plot_panels(self) -> None:
         stage = self._session.active_stage
@@ -1089,7 +1247,48 @@ class AdvancedPropellerWorkspace(QWidget):
 
     def _refresh_diagnostics(self) -> None:
         self.diagnostic_list.clear()
+        if self._preview_service.backend_error is not None:
+            self.diagnostic_list.addItem(QListWidgetItem(f"[ERROR] {self._preview_service.backend_error}"))
         if self._session.last_result is None:
             return
+        metadata = self._session.last_result.model_metadata
+        self.diagnostic_list.addItem(
+            QListWidgetItem(
+                f"[INFO] Source={metadata.source}, valid={metadata.valid}, watertight={metadata.watertight}, components={metadata.component_count}"
+            )
+        )
         for diagnostic in self._session.last_result.diagnostics:
             self.diagnostic_list.addItem(QListWidgetItem(f"[{diagnostic.severity.upper()}] {diagnostic.message}"))
+
+    def _sync_section_eta_constraints(self) -> None:
+        minimum_eta = self._session.feature_state.hub_parameters.hub_radius_ratio
+        if self._session.feature_state.preview_settings.section_eta < minimum_eta:
+            self._session.feature_state.preview_settings.section_eta = minimum_eta
+        if self._section_eta_spin is not None:
+            self._section_eta_spin.blockSignals(True)
+            self._section_eta_spin.setMinimum(minimum_eta)
+            self._section_eta_spin.setValue(self._session.feature_state.preview_settings.section_eta)
+            self._section_eta_spin.blockSignals(False)
+
+    def _backend_status_text(self) -> str:
+        if self._preview_service.backend_error is not None:
+            return f"Rust backend unavailable: {self._preview_service.backend_error}"
+        return "Rust backend: authoritative Truck build active"
+
+    def _show_backend_error(self, message: str | None) -> None:
+        if self._backend_status_label is not None:
+            self._backend_status_label.setText(self._backend_status_text())
+        if self._model_summary_label is not None:
+            self._model_summary_label.setText(message or "Rust backend unavailable.")
+        self._refresh_diagnostics()
+
+    def _update_model_summary(self, result: PropellerPreviewResult) -> None:
+        if self._backend_status_label is not None:
+            self._backend_status_label.setText(self._backend_status_text())
+        if self._model_summary_label is None:
+            return
+        metadata = result.model_metadata
+        self._model_summary_label.setText(
+            f"Source: {metadata.source}. Blades: {metadata.blade_count}. "
+            f"Components: {metadata.component_count}. Watertight: {metadata.watertight}."
+        )

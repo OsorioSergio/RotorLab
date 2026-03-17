@@ -2,13 +2,12 @@ from __future__ import annotations
 
 import pytest
 
+import rotorlab_app.services.propeller_preview_bridge as bridge_module
 from rotorlab_app.models.propeller import (
     ADVANCED_PROPELLER_MODULE_TYPE,
-    STAGE_ORDER,
-    PropellerPreviewRequestDTO,
-    create_default_propeller_feature_state,
+    ACTIVE_PROPELLER_STAGES,
 )
-from rotorlab_app.services.propeller_preview_engine import PythonPropellerPreviewBackend
+from rotorlab_app.services.propeller_preview_service import PropellerBuildService
 from rotorlab_app.ui.advanced_propeller import AdvancedPropellerWorkspace
 from rotorlab_app.ui.main_window import RotorLabMainWindow
 from rotorlab_app.ui.orchestrate import WorkflowCanvasScene
@@ -46,6 +45,10 @@ def _drop_propeller_module(window: RotorLabMainWindow) -> str:
     return node_id
 
 
+def _wait_for_result(qtbot, workspace: AdvancedPropellerWorkspace) -> None:
+    qtbot.waitUntil(lambda: workspace.session.last_result is not None, timeout=6000)
+
+
 def test_propeller_snapshot_uses_stable_module_type_and_payload(window):
     node_id = _drop_propeller_module(window)
     snapshot = window.orchestrate.scene.snapshot()
@@ -69,62 +72,106 @@ def test_propeller_node_activation_opens_and_reuses_advanced_environment(window,
     assert window.environment_tabs.count() == 2
 
 
-def test_advanced_propeller_workspace_builds_preview_and_updates_after_edit(window, qtbot):
+def test_advanced_propeller_workspace_exposes_authoritative_stages_and_builds(window, qtbot):
     node_id = _drop_propeller_module(window)
     assert window.orchestrate.scene.activate_node(node_id)
-    qtbot.wait(400)
+    qtbot.wait(200)
 
     workspace = window.workspace_stack.currentWidget()
     assert isinstance(workspace, AdvancedPropellerWorkspace)
+    _wait_for_result(qtbot, workspace)
+
+    labels = []
+    for root_index in range(workspace.stage_tree.topLevelItemCount()):
+        root = workspace.stage_tree.topLevelItem(root_index)
+        for child_index in range(root.childCount()):
+            labels.append(root.child(child_index).text(0))
+
+    assert len(workspace.session.last_result.mesh.faces) > 0
+    assert workspace.session.last_result.model_metadata.source == "truck_tessellation"
+    assert workspace.session.last_result.model_metadata.component_count >= 5
+    assert all(stage in ACTIVE_PROPELLER_STAGES for stage in workspace.session.last_result.built_stages)
+    assert "Tip Surface" in labels
+    assert "Hub Blend" in labels
+    assert "Pattern" in labels
+
+
+def test_advanced_propeller_workspace_rebuilds_after_pattern_edit(window, qtbot):
+    node_id = _drop_propeller_module(window)
+    assert window.orchestrate.scene.activate_node(node_id)
+    qtbot.wait(200)
+
+    workspace = window.workspace_stack.currentWidget()
+    assert isinstance(workspace, AdvancedPropellerWorkspace)
+    _wait_for_result(qtbot, workspace)
+
     initial_faces = workspace.viewport.mesh_face_count()
-    assert initial_faces > 0
-    assert workspace.diagnostic_list.count() > 0
+    initial_components = workspace.session.last_result.model_metadata.component_count
 
-    workspace._update_global("num_blades", 5, "blade_preview")
-    qtbot.wait(400)
-
-    assert workspace.viewport.mesh_face_count() > initial_faces
-    assert workspace.session.feature_state.dirty_stages == []
-
-
-def test_advanced_propeller_workspace_build_exact_builds_exact_artifacts(window, qtbot):
-    node_id = _drop_propeller_module(window)
-    assert window.orchestrate.scene.activate_node(node_id)
-    qtbot.wait(400)
-
-    workspace = window.workspace_stack.currentWidget()
-    assert isinstance(workspace, AdvancedPropellerWorkspace)
-
-    assert workspace.handle_action("Build Exact")
-    qtbot.wait(400)
-
-    assert workspace.session.last_result is not None
-    artifacts = workspace.session.last_result.exact_artifacts
-    assert artifacts["mode"] == "exact"
-    assert artifacts["exact_stages_built"] == ["blade_surface", "tip"]
-    assert artifacts["pending_exact_stages"] == ["hub", "pattern"]
-    assert "blade_surface" in artifacts
-    assert "tip_surface" in artifacts
-    assert artifacts["blade_surface"]["estimated_area"] >= 0.0
-    assert artifacts["tip_surface"]["estimated_area"] >= 0.0
-    assert workspace.session.feature_state.dirty_stages == []
-
-
-def test_python_fallback_exact_mode_includes_exact_artifacts() -> None:
-    state = create_default_propeller_feature_state("node-exact", "Propeller Exact")
-    request = PropellerPreviewRequestDTO(
-        feature_state=state,
-        dirty_stages=list(STAGE_ORDER),
-        build_mode="exact",
+    workspace._update_pattern("num_blades", 5, "pattern")
+    qtbot.waitUntil(
+        lambda: workspace.session.last_result is not None
+        and workspace.session.last_result.model_metadata.blade_count == 5,
+        timeout=6000,
     )
 
-    result = PythonPropellerPreviewBackend().rebuild_preview(request)
+    assert workspace.viewport.mesh_face_count() > initial_faces
+    assert workspace.session.last_result.model_metadata.component_count == initial_components + 1
+    assert workspace.session.feature_state.dirty_stages == []
 
-    assert result.exact_artifacts["mode"] == "exact"
-    assert result.exact_artifacts["exact_stages_built"] == ["blade_surface", "tip"]
-    assert result.exact_artifacts["pending_exact_stages"] == ["hub", "pattern"]
-    assert result.exact_artifacts["blade_count"] == state.global_parameters.num_blades
-    assert result.exact_artifacts["vertex_count"] == len(result.mesh.vertices)
-    assert result.exact_artifacts["face_count"] == len(result.mesh.faces)
-    assert result.exact_artifacts["blade_surface"]["engine"] == "python-fallback"
-    assert result.exact_artifacts["tip_surface"]["engine"] == "python-fallback"
+
+def test_advanced_propeller_workspace_rebuilds_after_tip_and_hub_edits(window, qtbot):
+    node_id = _drop_propeller_module(window)
+    assert window.orchestrate.scene.activate_node(node_id)
+    qtbot.wait(200)
+
+    workspace = window.workspace_stack.currentWidget()
+    assert isinstance(workspace, AdvancedPropellerWorkspace)
+    _wait_for_result(qtbot, workspace)
+
+    initial_apex = tuple(workspace.session.last_result.model_metadata.topology_status["tip_apex"])
+    initial_bounds = (
+        tuple(workspace.session.last_result.model_metadata.bounds_min),
+        tuple(workspace.session.last_result.model_metadata.bounds_max),
+    )
+
+    workspace._update_tip("cap_length_ratio", 0.20, "tip")
+    qtbot.waitUntil(lambda: workspace.session.feature_state.dirty_stages == [], timeout=6000)
+    after_tip_apex = tuple(workspace.session.last_result.model_metadata.topology_status["tip_apex"])
+    after_tip_bounds = (
+        tuple(workspace.session.last_result.model_metadata.bounds_min),
+        tuple(workspace.session.last_result.model_metadata.bounds_max),
+    )
+
+    workspace._update_hub("hub_length_ratio", 0.44, "hub")
+    qtbot.waitUntil(lambda: workspace.session.feature_state.dirty_stages == [], timeout=6000)
+    after_hub_bounds = (
+        tuple(workspace.session.last_result.model_metadata.bounds_min),
+        tuple(workspace.session.last_result.model_metadata.bounds_max),
+    )
+
+    assert after_tip_apex != initial_apex
+    assert after_hub_bounds != after_tip_bounds
+    assert workspace.session.last_result.model_metadata.source == "truck_tessellation"
+
+
+def test_build_service_reports_backend_missing(monkeypatch):
+    monkeypatch.setattr(
+        bridge_module,
+        "_backend_error",
+        lambda: "Rust backend is not installed. Run the repo maturin develop flow before using the advanced propeller workspace.",
+    )
+    service = PropellerBuildService()
+    assert not service.using_rust_backend
+    assert "not installed" in (service.backend_error or "")
+
+
+def test_build_service_reports_backend_contract_mismatch(monkeypatch):
+    monkeypatch.setattr(
+        bridge_module,
+        "_backend_error",
+        lambda: "Rust backend contract mismatch. Expected rotorlab-propeller-build:2026-03-17.1, got stale.",
+    )
+    service = PropellerBuildService()
+    assert not service.using_rust_backend
+    assert "contract mismatch" in (service.backend_error or "")

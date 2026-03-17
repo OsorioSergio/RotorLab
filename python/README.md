@@ -1,26 +1,23 @@
 # RotorLab Frontend (PyQt6)
 
-## Run
+## Setup
 
 From `python/`:
 
 ```powershell
 pip install -r requirements.txt
-rotorlab-app
+.\scripts\develop_rust_backend.ps1
 ```
 
-## Current Scope
+The advanced propeller workspace now requires the local Rust extension. There is no supported Python geometry fallback.
 
-- Main app shell with three-row top section:
-  - Global Project Controls
-  - Environment tabs (fixed Orchestrate + dynamic tabs)
-  - Context toolbar (changes with active environment)
-- Middle workspace:
-  - Orchestrate module library (drag source)
-  - Orchestrate canvas (drop target)
-- Bottom status bar:
-  - state message
-  - console dialog button
+## Run
+
+From `python/`:
+
+```powershell
+rotorlab-app
+```
 
 ## Test
 
