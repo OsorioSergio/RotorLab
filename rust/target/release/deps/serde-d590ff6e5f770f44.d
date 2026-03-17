@@ -1,0 +1,14 @@
+C:\Users\sergio\Documents\GitHub\RotorLab\rust\target\release\deps\serde-d590ff6e5f770f44.d: C:\Users\sergio\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\lib.rs C:\Users\sergio\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\integer128.rs C:\Users\sergio\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\private\mod.rs C:\Users\sergio\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\private\de.rs C:\Users\sergio\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\private\ser.rs C:\Users\sergio\Documents\GitHub\RotorLab\rust\target\release\build\serde-fdfabe2c787fc687\out/private.rs
+
+C:\Users\sergio\Documents\GitHub\RotorLab\rust\target\release\deps\libserde-d590ff6e5f770f44.rlib: C:\Users\sergio\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\lib.rs C:\Users\sergio\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\integer128.rs C:\Users\sergio\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\private\mod.rs C:\Users\sergio\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\private\de.rs C:\Users\sergio\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\private\ser.rs C:\Users\sergio\Documents\GitHub\RotorLab\rust\target\release\build\serde-fdfabe2c787fc687\out/private.rs
+
+C:\Users\sergio\Documents\GitHub\RotorLab\rust\target\release\deps\libserde-d590ff6e5f770f44.rmeta: C:\Users\sergio\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\lib.rs C:\Users\sergio\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\integer128.rs C:\Users\sergio\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\private\mod.rs C:\Users\sergio\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\private\de.rs C:\Users\sergio\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\private\ser.rs C:\Users\sergio\Documents\GitHub\RotorLab\rust\target\release\build\serde-fdfabe2c787fc687\out/private.rs
+
+C:\Users\sergio\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\lib.rs:
+C:\Users\sergio\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\integer128.rs:
+C:\Users\sergio\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\private\mod.rs:
+C:\Users\sergio\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\private\de.rs:
+C:\Users\sergio\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\private\ser.rs:
+C:\Users\sergio\Documents\GitHub\RotorLab\rust\target\release\build\serde-fdfabe2c787fc687\out/private.rs:
+
+# env-dep:OUT_DIR=C:\\Users\\sergio\\Documents\\GitHub\\RotorLab\\rust\\target\\release\\build\\serde-fdfabe2c787fc687\\out

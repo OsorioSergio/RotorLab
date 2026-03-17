@@ -655,6 +655,7 @@ class AdvancedPropellerWorkspace(QWidget):
         self.setObjectName("AdvancedPropellerWorkspace")
         self._session = session
         self._preview_service = PropellerPreviewService(self)
+        self._pending_build_mode = "preview"
         self._preview_service.preview_started.connect(self._on_preview_started)
         self._preview_service.preview_ready.connect(self._on_preview_ready)
         self._preview_service.preview_failed.connect(self._on_preview_failed)
@@ -788,6 +789,9 @@ class AdvancedPropellerWorkspace(QWidget):
             return True
         if action_name == "Validate Propeller":
             self._request_preview(force_all=False)
+            return True
+        if action_name == "Build Exact":
+            self._request_preview(force_all=True, build_mode="exact")
             return True
         if action_name == "Reset View":
             self.viewport.reset_view()
@@ -1026,16 +1030,22 @@ class AdvancedPropellerWorkspace(QWidget):
         self._refresh_plot_panels()
         self._request_preview(force_all=False)
 
-    def _request_preview(self, force_all: bool) -> None:
+    def _request_preview(self, force_all: bool, build_mode: str = "preview") -> None:
+        self._pending_build_mode = build_mode
         if force_all:
             self._session.feature_state.dirty_stages = list(ACTIVE_PROPELLER_STAGES)
         self._preview_service.request_preview(
             self._session.feature_state,
             list(self._session.feature_state.dirty_stages),
+            build_mode=build_mode,
         )
 
     def _on_preview_started(self, dirty_stages: list[str]) -> None:
-        self.status_message.emit("Rebuilding propeller preview: " + ", ".join(STAGE_LABELS[stage] for stage in dirty_stages))
+        label = "exact propeller build" if self._pending_build_mode == "exact" else "propeller preview"
+        verb = "Building" if self._pending_build_mode == "exact" else "Rebuilding"
+        self.status_message.emit(
+            f"{verb} {label}: " + ", ".join(STAGE_LABELS[stage] for stage in dirty_stages)
+        )
 
     def _on_preview_ready(self, result: PropellerPreviewResult) -> None:
         self._session.last_result = result
@@ -1048,10 +1058,17 @@ class AdvancedPropellerWorkspace(QWidget):
         )
         self._refresh_plot_panels()
         self._refresh_diagnostics()
-        self.status_message.emit(f"Propeller preview ready ({len(result.mesh.vertices)} verts, {len(result.mesh.faces)} faces).")
+        is_exact = self._pending_build_mode == "exact" or result.exact_artifacts.get("mode") == "exact"
+        status_prefix = "Exact propeller build ready" if is_exact else "Propeller preview ready"
+        self.status_message.emit(
+            f"{status_prefix} ({len(result.mesh.vertices)} verts, {len(result.mesh.faces)} faces)."
+        )
+        self._pending_build_mode = "preview"
 
     def _on_preview_failed(self, message: str) -> None:
-        self.status_message.emit(f"Propeller preview failed: {message}")
+        label = "exact propeller build" if self._pending_build_mode == "exact" else "propeller preview"
+        self.status_message.emit(f"{label.capitalize()} failed: {message}")
+        self._pending_build_mode = "preview"
 
     def _refresh_plot_panels(self) -> None:
         stage = self._session.active_stage

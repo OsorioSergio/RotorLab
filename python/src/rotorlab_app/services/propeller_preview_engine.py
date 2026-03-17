@@ -161,7 +161,92 @@ class PythonPropellerPreviewBackend:
             placed_section_samples=section_placement["placed_sections"],
             mesh=blade_preview["mesh"],
             diagnostics=diagnostics,
+            exact_artifacts=self._build_exact_artifacts(
+                state,
+                blade_preview["mesh"],
+                request.build_mode,
+            ),
         )
+
+    def _build_exact_artifacts(
+        self,
+        state,
+        mesh: PropellerPreviewMesh,
+        build_mode: str,
+    ) -> dict[str, Any]:
+        if build_mode != "exact":
+            return {}
+
+        if mesh.vertices:
+            xs = [vertex[0] for vertex in mesh.vertices]
+            ys = [vertex[1] for vertex in mesh.vertices]
+            zs = [vertex[2] for vertex in mesh.vertices]
+            bounds_min = [min(xs), min(ys), min(zs)]
+            bounds_max = [max(xs), max(ys), max(zs)]
+        else:
+            bounds_min = [0.0, 0.0, 0.0]
+            bounds_max = [0.0, 0.0, 0.0]
+
+        surface_rows = max(24, state.preview_settings.span_samples * 2)
+        surface_cols = max(64, state.preview_settings.chord_samples * 2)
+        estimated_area = self._estimate_mesh_area(mesh.vertices, mesh.faces)
+
+        return {
+            "mode": "exact",
+            "exact_stages_built": ["blade_surface", "tip"],
+            "pending_exact_stages": ["hub", "pattern"],
+            "blade_count": state.global_parameters.num_blades,
+            "vertex_count": len(mesh.vertices),
+            "face_count": len(mesh.faces),
+            "bounds_min": bounds_min,
+            "bounds_max": bounds_max,
+            "blade_surface": {
+                "engine": "python-fallback",
+                "u_degree": 3,
+                "v_degree": 3,
+                "control_points_u": surface_rows,
+                "control_points_v": surface_cols,
+                "sample_points_u": max(32, surface_rows // 2),
+                "sample_points_v": max(32, surface_cols // 4),
+                "estimated_area": estimated_area,
+                "bounds_min": bounds_min,
+                "bounds_max": bounds_max,
+            },
+            "tip_surface": {
+                "engine": "python-fallback",
+                "u_degree": 3,
+                "v_degree": 3,
+                "control_points_u": 4,
+                "control_points_v": surface_cols,
+                "sample_points_u": 40,
+                "sample_points_v": max(32, surface_cols // 4),
+                "estimated_area": max(estimated_area * 0.08, 0.0),
+                "bounds_min": bounds_min,
+                "bounds_max": bounds_max,
+                "tip_radius": max(0.0, state.global_parameters.radius * 0.015),
+            },
+            "message": "Fallback exact blade-surface and tip metadata generated. Truck exact stages hub/pattern remain pending.",
+        }
+
+    def _estimate_mesh_area(
+        self,
+        vertices: list[tuple[float, float, float]],
+        faces: list[tuple[int, int, int]],
+    ) -> float:
+        if not vertices or not faces:
+            return 0.0
+        area = 0.0
+        for i0, i1, i2 in faces:
+            if i0 >= len(vertices) or i1 >= len(vertices) or i2 >= len(vertices):
+                continue
+            p0 = vertices[i0]
+            p1 = vertices[i1]
+            p2 = vertices[i2]
+            edge0 = _sub(p1, p0)
+            edge1 = _sub(p2, p0)
+            cross = _cross(edge0, edge1)
+            area += 0.5 * math.sqrt(_dot(cross, cross))
+        return area
 
     def _build_center_surface(self, state) -> dict[str, Any]:
         distributions = state.distributions
@@ -444,4 +529,3 @@ class PythonPropellerPreviewBackend:
             thickness = _scale(thickness_dir, station["chord"] * y_sec)
             points_3d.append(_add(origin, _add(chordwise, thickness)))
         return points_3d
-

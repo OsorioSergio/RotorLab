@@ -13,17 +13,30 @@ try:
 except ImportError:  # pragma: no cover - exercised only when the Rust extension is available
     _rust_backend = None
 
+_RUST_API_MAJOR = "1."
+
+
+def _rust_backend_compatible() -> bool:
+    if _rust_backend is None:
+        return False
+    api_version_fn = getattr(_rust_backend, "propeller_backend_api_version", None)
+    if not callable(api_version_fn):
+        return False
+    version = str(api_version_fn())
+    return version.startswith(_RUST_API_MAJOR)
+
 
 class PropellerPreviewBridge:
     def __init__(self) -> None:
         self._python_backend = PythonPropellerPreviewBackend()
+        self._use_rust_backend = _rust_backend_compatible()
 
     @property
     def using_rust_backend(self) -> bool:
-        return _rust_backend is not None
+        return self._use_rust_backend
 
     def rebuild_preview(self, request: PropellerPreviewRequestDTO) -> PropellerPreviewResult:
-        if _rust_backend is not None:
+        if self._use_rust_backend and _rust_backend is not None:
             payload = json.dumps(request.to_dict())
             response = _rust_backend.propeller_rebuild_preview(payload)
             return PropellerPreviewResult.from_dict(json.loads(response))

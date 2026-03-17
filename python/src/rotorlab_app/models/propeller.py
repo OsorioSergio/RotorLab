@@ -247,16 +247,22 @@ class PropellerFeatureState:
 class PropellerPreviewRequestDTO:
     feature_state: PropellerFeatureState
     dirty_stages: list[str]
+    build_mode: str = "preview"
+    requested_artifacts: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "feature_state": self.feature_state.to_dict(),
             "dirty_stages": list(self.dirty_stages),
+            "build_mode": self.build_mode,
+            "requested_artifacts": list(self.requested_artifacts),
         }
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> PropellerPreviewRequestDTO:
         state_payload = payload.get("feature_state", {})
+        build_mode = payload.get("build_mode", "preview")
+        build_mode = build_mode if isinstance(build_mode, str) and build_mode else "preview"
         return cls(
             feature_state=PropellerFeatureState.from_dict(
                 state_payload if isinstance(state_payload, dict) else {}
@@ -265,6 +271,12 @@ class PropellerPreviewRequestDTO:
                 stage
                 for stage in payload.get("dirty_stages", list(STAGE_ORDER))
                 if isinstance(stage, str)
+            ],
+            build_mode=build_mode,
+            requested_artifacts=[
+                artifact
+                for artifact in payload.get("requested_artifacts", [])
+                if isinstance(artifact, str)
             ],
         )
 
@@ -343,6 +355,7 @@ class PropellerPreviewResult:
     placed_section_samples: dict[str, list[list[tuple[float, float, float]]]]
     mesh: PropellerPreviewMesh
     diagnostics: list[PropellerDiagnosticDTO]
+    exact_artifacts: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -369,10 +382,12 @@ class PropellerPreviewResult:
             },
             "mesh": self.mesh.to_dict(),
             "diagnostics": [diagnostic.to_dict() for diagnostic in self.diagnostics],
+            "exact_artifacts": dict(self.exact_artifacts),
         }
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> PropellerPreviewResult:
+        exact_artifacts_payload = payload.get("exact_artifacts", {})
         return cls(
             ok=bool(payload.get("ok", False)),
             built_stages=[
@@ -427,6 +442,7 @@ class PropellerPreviewResult:
                 for item in payload.get("diagnostics", [])
                 if isinstance(item, dict)
             ],
+            exact_artifacts=dict(exact_artifacts_payload) if isinstance(exact_artifacts_payload, dict) else {},
         )
 
 

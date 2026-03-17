@@ -1,0 +1,14 @@
+C:\Users\sergio\Documents\GitHub\RotorLab\rust\target\release\deps\pyo3_build_config-92164b17a19e47a6.d: C:\Users\sergio\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\pyo3-build-config-0.28.2\src\lib.rs C:\Users\sergio\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\pyo3-build-config-0.28.2\src\errors.rs C:\Users\sergio\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\pyo3-build-config-0.28.2\src\impl_.rs C:\Users\sergio\Documents\GitHub\RotorLab\rust\target\release\build\pyo3-build-config-82a48d64c7225496\out/pyo3-build-config-file.txt C:\Users\sergio\Documents\GitHub\RotorLab\rust\target\release\build\pyo3-build-config-82a48d64c7225496\out/pyo3-build-config.txt
+
+C:\Users\sergio\Documents\GitHub\RotorLab\rust\target\release\deps\libpyo3_build_config-92164b17a19e47a6.rlib: C:\Users\sergio\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\pyo3-build-config-0.28.2\src\lib.rs C:\Users\sergio\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\pyo3-build-config-0.28.2\src\errors.rs C:\Users\sergio\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\pyo3-build-config-0.28.2\src\impl_.rs C:\Users\sergio\Documents\GitHub\RotorLab\rust\target\release\build\pyo3-build-config-82a48d64c7225496\out/pyo3-build-config-file.txt C:\Users\sergio\Documents\GitHub\RotorLab\rust\target\release\build\pyo3-build-config-82a48d64c7225496\out/pyo3-build-config.txt
+
+C:\Users\sergio\Documents\GitHub\RotorLab\rust\target\release\deps\libpyo3_build_config-92164b17a19e47a6.rmeta: C:\Users\sergio\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\pyo3-build-config-0.28.2\src\lib.rs C:\Users\sergio\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\pyo3-build-config-0.28.2\src\errors.rs C:\Users\sergio\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\pyo3-build-config-0.28.2\src\impl_.rs C:\Users\sergio\Documents\GitHub\RotorLab\rust\target\release\build\pyo3-build-config-82a48d64c7225496\out/pyo3-build-config-file.txt C:\Users\sergio\Documents\GitHub\RotorLab\rust\target\release\build\pyo3-build-config-82a48d64c7225496\out/pyo3-build-config.txt
+
+C:\Users\sergio\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\pyo3-build-config-0.28.2\src\lib.rs:
+C:\Users\sergio\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\pyo3-build-config-0.28.2\src\errors.rs:
+C:\Users\sergio\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\pyo3-build-config-0.28.2\src\impl_.rs:
+C:\Users\sergio\Documents\GitHub\RotorLab\rust\target\release\build\pyo3-build-config-82a48d64c7225496\out/pyo3-build-config-file.txt:
+C:\Users\sergio\Documents\GitHub\RotorLab\rust\target\release\build\pyo3-build-config-82a48d64c7225496\out/pyo3-build-config.txt:
+
+# env-dep:CARGO_PKG_VERSION=0.28.2
+# env-dep:OUT_DIR=C:\\Users\\sergio\\Documents\\GitHub\\RotorLab\\rust\\target\\release\\build\\pyo3-build-config-82a48d64c7225496\\out

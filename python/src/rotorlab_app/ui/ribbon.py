@@ -88,6 +88,7 @@ RIBBON_LAYOUTS: dict[str, tuple[RibbonGroupDef, ...]] = {
             (
                 RibbonActionDef("Rebuild Preview", "Rebuild\nPreview", "large", "P"),
                 RibbonActionDef("Validate Propeller", "Validate", "small", "V"),
+                RibbonActionDef("Build Exact", "Build Exact", "small", "Ex"),
                 RibbonActionDef("Reset View", "Reset View", "small", "Rv"),
             ),
         ),

@@ -1,0 +1,152 @@
+   0.042851100s  INFO prepare_target{force=false package_id=rotorlab_propeller_preview v0.1.2 (C:\Users\sergio\Documents\GitHub\RotorLab\rust\rotorlab_propeller_preview) target="rotorlab_propeller_preview"}: cargo::core::compiler::fingerprint: fingerprint error for rotorlab_propeller_preview v0.1.2 (C:\Users\sergio\Documents\GitHub\RotorLab\rust\rotorlab_propeller_preview)/Check { test: false }/TargetInner { ..: lib_target("rotorlab_propeller_preview", ["cdylib"], "C:\\Users\\sergio\\Documents\\GitHub\\RotorLab\\rust\\rotorlab_propeller_preview\\src\\lib.rs", Edition2021) }
+   0.042901200s  INFO prepare_target{force=false package_id=rotorlab_propeller_preview v0.1.2 (C:\Users\sergio\Documents\GitHub\RotorLab\rust\rotorlab_propeller_preview) target="rotorlab_propeller_preview"}: cargo::core::compiler::fingerprint:     err: failed to read `C:\Users\sergio\Documents\GitHub\RotorLab\rust\target\debug\.fingerprint\rotorlab_propeller_preview-49fc5a4998dbcb25\lib-rotorlab_propeller_preview`
+
+Caused by:
+    The system cannot find the file specified. (os error 2)
+
+Stack backtrace:
+   0: git_midx_writer_dump
+   1: git_midx_writer_dump
+   2: git_midx_writer_dump
+   3: git_midx_writer_dump
+   4: git_filter_source_repo
+   5: git_filter_source_repo
+   6: git_filter_source_repo
+   7: git_filter_source_repo
+   8: git_filter_source_repo
+   9: git_filter_source_repo
+  10: git_filter_source_repo
+  11: git_libgit2_prerelease
+  12: <unknown>
+  13: <unknown>
+  14: <unknown>
+  15: <unknown>
+  16: git_midx_writer_dump
+  17: git_filter_source_repo
+  18: git_midx_writer_dump
+  19: BaseThreadInitThunk
+  20: RtlUserThreadStart
+   0.050808400s  INFO prepare_target{force=false package_id=pyo3 v0.28.2 target="pyo3"}: cargo::core::compiler::fingerprint: fingerprint error for pyo3 v0.28.2/Check { test: false }/TargetInner { ..: lib_target("pyo3", ["lib"], "C:\\Users\\sergio\\.cargo\\registry\\src\\index.crates.io-1949cf8c6b5b557f\\pyo3-0.28.2\\src\\lib.rs", Edition2021) }
+   0.050831200s  INFO prepare_target{force=false package_id=pyo3 v0.28.2 target="pyo3"}: cargo::core::compiler::fingerprint:     err: failed to read `C:\Users\sergio\Documents\GitHub\RotorLab\rust\target\debug\.fingerprint\pyo3-f92ac813e1fc04b7\lib-pyo3`
+
+Caused by:
+    The system cannot find the file specified. (os error 2)
+
+Stack backtrace:
+   0: git_midx_writer_dump
+   1: git_midx_writer_dump
+   2: git_midx_writer_dump
+   3: git_midx_writer_dump
+   4: git_filter_source_repo
+   5: git_filter_source_repo
+   6: git_filter_source_repo
+   7: git_filter_source_repo
+   8: git_filter_source_repo
+   9: git_filter_source_repo
+  10: git_filter_source_repo
+  11: git_filter_source_repo
+  12: git_libgit2_prerelease
+  13: <unknown>
+  14: <unknown>
+  15: <unknown>
+  16: <unknown>
+  17: git_midx_writer_dump
+  18: git_filter_source_repo
+  19: git_midx_writer_dump
+  20: BaseThreadInitThunk
+  21: RtlUserThreadStart
+   0.052408500s  INFO prepare_target{force=false package_id=pyo3 v0.28.2 target="build-script-build"}: cargo::core::compiler::fingerprint: fingerprint dirty for pyo3 v0.28.2/RunCustomBuild/TargetInner { ..: custom_build_target("build-script-build", "C:\\Users\\sergio\\.cargo\\registry\\src\\index.crates.io-1949cf8c6b5b557f\\pyo3-0.28.2\\build.rs", Edition2021) }
+   0.052425300s  INFO prepare_target{force=false package_id=pyo3 v0.28.2 target="build-script-build"}: cargo::core::compiler::fingerprint:     dirty: UnitDependencyInfoChanged { unit: UnitIndex(25) }
+   0.052668900s  INFO prepare_target{force=false package_id=pyo3 v0.28.2 target="build-script-build"}: cargo::core::compiler::fingerprint: fingerprint dirty for pyo3 v0.28.2/Build/TargetInner { ..: custom_build_target("build-script-build", "C:\\Users\\sergio\\.cargo\\registry\\src\\index.crates.io-1949cf8c6b5b557f\\pyo3-0.28.2\\build.rs", Edition2021) }
+   0.052681900s  INFO prepare_target{force=false package_id=pyo3 v0.28.2 target="build-script-build"}: cargo::core::compiler::fingerprint:     dirty: UnitDependencyInfoChanged { unit: UnitIndex(27) }
+   0.053172100s  INFO prepare_target{force=false package_id=pyo3-build-config v0.28.2 target="pyo3_build_config"}: cargo::core::compiler::fingerprint: fingerprint dirty for pyo3-build-config v0.28.2/Build/TargetInner { ..: lib_target("pyo3_build_config", ["lib"], "C:\\Users\\sergio\\.cargo\\registry\\src\\index.crates.io-1949cf8c6b5b557f\\pyo3-build-config-0.28.2\\src\\lib.rs", Edition2021) }
+   0.053191300s  INFO prepare_target{force=false package_id=pyo3-build-config v0.28.2 target="pyo3_build_config"}: cargo::core::compiler::fingerprint:     dirty: UnitDependencyInfoChanged { unit: UnitIndex(28) }
+   0.053864000s  INFO prepare_target{force=false package_id=pyo3-build-config v0.28.2 target="build-script-build"}: cargo::core::compiler::fingerprint: fingerprint dirty for pyo3-build-config v0.28.2/RunCustomBuild/TargetInner { ..: custom_build_target("build-script-build", "C:\\Users\\sergio\\.cargo\\registry\\src\\index.crates.io-1949cf8c6b5b557f\\pyo3-build-config-0.28.2\\build.rs", Edition2021) }
+   0.053887000s  INFO prepare_target{force=false package_id=pyo3-build-config v0.28.2 target="build-script-build"}: cargo::core::compiler::fingerprint:     dirty: EnvVarChanged { name: "PYO3_PYTHON", old_value: Some("C:\\Users\\sergio\\Documents\\GitHub\\RotorLab\\python\\.venv\\Scripts\\python.exe"), new_value: None }
+   0.055095000s  INFO prepare_target{force=false package_id=pyo3-ffi v0.28.2 target="build-script-build"}: cargo::core::compiler::fingerprint: fingerprint dirty for pyo3-ffi v0.28.2/RunCustomBuild/TargetInner { ..: custom_build_target("build-script-build", "C:\\Users\\sergio\\.cargo\\registry\\src\\index.crates.io-1949cf8c6b5b557f\\pyo3-ffi-0.28.2\\build.rs", Edition2021) }
+   0.055110400s  INFO prepare_target{force=false package_id=pyo3-ffi v0.28.2 target="build-script-build"}: cargo::core::compiler::fingerprint:     dirty: UnitDependencyInfoChanged { unit: UnitIndex(31) }
+   0.055377900s  INFO prepare_target{force=false package_id=pyo3-ffi v0.28.2 target="build-script-build"}: cargo::core::compiler::fingerprint: fingerprint dirty for pyo3-ffi v0.28.2/Build/TargetInner { ..: custom_build_target("build-script-build", "C:\\Users\\sergio\\.cargo\\registry\\src\\index.crates.io-1949cf8c6b5b557f\\pyo3-ffi-0.28.2\\build.rs", Edition2021) }
+   0.055387100s  INFO prepare_target{force=false package_id=pyo3-ffi v0.28.2 target="build-script-build"}: cargo::core::compiler::fingerprint:     dirty: UnitDependencyInfoChanged { unit: UnitIndex(27) }
+   0.055656200s  INFO prepare_target{force=false package_id=pyo3-ffi v0.28.2 target="pyo3_ffi"}: cargo::core::compiler::fingerprint: fingerprint error for pyo3-ffi v0.28.2/Check { test: false }/TargetInner { ..: lib_target("pyo3_ffi", ["lib"], "C:\\Users\\sergio\\.cargo\\registry\\src\\index.crates.io-1949cf8c6b5b557f\\pyo3-ffi-0.28.2\\src\\lib.rs", Edition2021) }
+   0.055670500s  INFO prepare_target{force=false package_id=pyo3-ffi v0.28.2 target="pyo3_ffi"}: cargo::core::compiler::fingerprint:     err: failed to read `C:\Users\sergio\Documents\GitHub\RotorLab\rust\target\debug\.fingerprint\pyo3-ffi-de02d8f26a3c8777\lib-pyo3_ffi`
+
+Caused by:
+    The system cannot find the file specified. (os error 2)
+
+Stack backtrace:
+   0: git_midx_writer_dump
+   1: git_midx_writer_dump
+   2: git_midx_writer_dump
+   3: git_midx_writer_dump
+   4: git_filter_source_repo
+   5: git_filter_source_repo
+   6: git_filter_source_repo
+   7: git_filter_source_repo
+   8: git_filter_source_repo
+   9: git_filter_source_repo
+  10: git_filter_source_repo
+  11: git_filter_source_repo
+  12: git_filter_source_repo
+  13: git_libgit2_prerelease
+  14: <unknown>
+  15: <unknown>
+  16: <unknown>
+  17: <unknown>
+  18: git_midx_writer_dump
+  19: git_filter_source_repo
+  20: git_midx_writer_dump
+  21: BaseThreadInitThunk
+  22: RtlUserThreadStart
+   0.055958300s  INFO prepare_target{force=false package_id=pyo3-macros v0.28.2 target="pyo3_macros"}: cargo::core::compiler::fingerprint: fingerprint dirty for pyo3-macros v0.28.2/Build/TargetInner { for_host: true, proc_macro: true, ..: lib_target("pyo3_macros", ["proc-macro"], "C:\\Users\\sergio\\.cargo\\registry\\src\\index.crates.io-1949cf8c6b5b557f\\pyo3-macros-0.28.2\\src\\lib.rs", Edition2021) }
+   0.055975300s  INFO prepare_target{force=false package_id=pyo3-macros v0.28.2 target="pyo3_macros"}: cargo::core::compiler::fingerprint:     dirty: UnitDependencyInfoChanged { unit: UnitIndex(34) }
+   0.056924300s  INFO prepare_target{force=false package_id=pyo3-macros-backend v0.28.2 target="pyo3_macros_backend"}: cargo::core::compiler::fingerprint: fingerprint dirty for pyo3-macros-backend v0.28.2/Build/TargetInner { ..: lib_target("pyo3_macros_backend", ["lib"], "C:\\Users\\sergio\\.cargo\\registry\\src\\index.crates.io-1949cf8c6b5b557f\\pyo3-macros-backend-0.28.2\\src\\lib.rs", Edition2021) }
+   0.056938400s  INFO prepare_target{force=false package_id=pyo3-macros-backend v0.28.2 target="pyo3_macros_backend"}: cargo::core::compiler::fingerprint:     dirty: UnitDependencyInfoChanged { unit: UnitIndex(27) }
+   0.057595200s  INFO prepare_target{force=false package_id=pyo3-macros-backend v0.28.2 target="build-script-build"}: cargo::core::compiler::fingerprint: fingerprint dirty for pyo3-macros-backend v0.28.2/RunCustomBuild/TargetInner { ..: custom_build_target("build-script-build", "C:\\Users\\sergio\\.cargo\\registry\\src\\index.crates.io-1949cf8c6b5b557f\\pyo3-macros-backend-0.28.2\\build.rs", Edition2021) }
+   0.057607700s  INFO prepare_target{force=false package_id=pyo3-macros-backend v0.28.2 target="build-script-build"}: cargo::core::compiler::fingerprint:     dirty: UnitDependencyInfoChanged { unit: UnitIndex(36) }
+   0.057795200s  INFO prepare_target{force=false package_id=pyo3-macros-backend v0.28.2 target="build-script-build"}: cargo::core::compiler::fingerprint: fingerprint dirty for pyo3-macros-backend v0.28.2/Build/TargetInner { ..: custom_build_target("build-script-build", "C:\\Users\\sergio\\.cargo\\registry\\src\\index.crates.io-1949cf8c6b5b557f\\pyo3-macros-backend-0.28.2\\build.rs", Edition2021) }
+   0.057805500s  INFO prepare_target{force=false package_id=pyo3-macros-backend v0.28.2 target="build-script-build"}: cargo::core::compiler::fingerprint:     dirty: UnitDependencyInfoChanged { unit: UnitIndex(27) }
+   0.065289400s  INFO prepare_target{force=false package_id=rotorlab_propeller_preview v0.1.2 (C:\Users\sergio\Documents\GitHub\RotorLab\rust\rotorlab_propeller_preview) target="rotorlab_propeller_preview"}: cargo::core::compiler::fingerprint: fingerprint error for rotorlab_propeller_preview v0.1.2 (C:\Users\sergio\Documents\GitHub\RotorLab\rust\rotorlab_propeller_preview)/Check { test: true }/TargetInner { ..: lib_target("rotorlab_propeller_preview", ["cdylib"], "C:\\Users\\sergio\\Documents\\GitHub\\RotorLab\\rust\\rotorlab_propeller_preview\\src\\lib.rs", Edition2021) }
+   0.065312700s  INFO prepare_target{force=false package_id=rotorlab_propeller_preview v0.1.2 (C:\Users\sergio\Documents\GitHub\RotorLab\rust\rotorlab_propeller_preview) target="rotorlab_propeller_preview"}: cargo::core::compiler::fingerprint:     err: failed to read `C:\Users\sergio\Documents\GitHub\RotorLab\rust\target\debug\.fingerprint\rotorlab_propeller_preview-e191b67ea8bc62d3\test-lib-rotorlab_propeller_preview`
+
+Caused by:
+    The system cannot find the file specified. (os error 2)
+
+Stack backtrace:
+   0: git_midx_writer_dump
+   1: git_midx_writer_dump
+   2: git_midx_writer_dump
+   3: git_midx_writer_dump
+   4: git_filter_source_repo
+   5: git_filter_source_repo
+   6: git_filter_source_repo
+   7: git_filter_source_repo
+   8: git_filter_source_repo
+   9: git_filter_source_repo
+  10: git_filter_source_repo
+  11: git_libgit2_prerelease
+  12: <unknown>
+  13: <unknown>
+  14: <unknown>
+  15: <unknown>
+  16: git_midx_writer_dump
+  17: git_filter_source_repo
+  18: git_midx_writer_dump
+  19: BaseThreadInitThunk
+  20: RtlUserThreadStart
+   Compiling pyo3-build-config v0.28.2
+error: failed to run custom build command for `pyo3-build-config v0.28.2`
+note: To improve backtraces for build dependencies, set the CARGO_PROFILE_DEV_BUILD_OVERRIDE_DEBUG=true environment variable to enable debug information generation.
+
+Caused by:
+  process didn't exit successfully: `C:\Users\sergio\Documents\GitHub\RotorLab\rust\target\debug\build\pyo3-build-config-591f7c3ec9e1325d\build-script-build` (exit code: 1)
+  --- stdout
+  cargo:rerun-if-env-changed=PYO3_CONFIG_FILE
+  cargo:rerun-if-env-changed=PYO3_NO_PYTHON
+  cargo:rerun-if-env-changed=PYO3_ENVIRONMENT_SIGNATURE
+  cargo:rerun-if-env-changed=PYO3_PYTHON
+  cargo:rerun-if-env-changed=VIRTUAL_ENV
+  cargo:rerun-if-env-changed=CONDA_PREFIX
+  cargo:rerun-if-env-changed=PATH
+
+  --- stderr
+  error: no Python 3.x interpreter found

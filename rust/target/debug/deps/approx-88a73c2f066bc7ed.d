@@ -1,0 +1,11 @@
+C:\Users\sergio\Documents\GitHub\RotorLab\rust\target\debug\deps\approx-88a73c2f066bc7ed.d: C:\Users\sergio\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\approx-0.4.0\src\lib.rs C:\Users\sergio\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\approx-0.4.0\src\abs_diff_eq.rs C:\Users\sergio\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\approx-0.4.0\src\relative_eq.rs C:\Users\sergio\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\approx-0.4.0\src\ulps_eq.rs C:\Users\sergio\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\approx-0.4.0\src\macros.rs
+
+C:\Users\sergio\Documents\GitHub\RotorLab\rust\target\debug\deps\libapprox-88a73c2f066bc7ed.rlib: C:\Users\sergio\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\approx-0.4.0\src\lib.rs C:\Users\sergio\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\approx-0.4.0\src\abs_diff_eq.rs C:\Users\sergio\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\approx-0.4.0\src\relative_eq.rs C:\Users\sergio\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\approx-0.4.0\src\ulps_eq.rs C:\Users\sergio\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\approx-0.4.0\src\macros.rs
+
+C:\Users\sergio\Documents\GitHub\RotorLab\rust\target\debug\deps\libapprox-88a73c2f066bc7ed.rmeta: C:\Users\sergio\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\approx-0.4.0\src\lib.rs C:\Users\sergio\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\approx-0.4.0\src\abs_diff_eq.rs C:\Users\sergio\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\approx-0.4.0\src\relative_eq.rs C:\Users\sergio\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\approx-0.4.0\src\ulps_eq.rs C:\Users\sergio\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\approx-0.4.0\src\macros.rs
+
+C:\Users\sergio\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\approx-0.4.0\src\lib.rs:
+C:\Users\sergio\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\approx-0.4.0\src\abs_diff_eq.rs:
+C:\Users\sergio\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\approx-0.4.0\src\relative_eq.rs:
+C:\Users\sergio\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\approx-0.4.0\src\ulps_eq.rs:
+C:\Users\sergio\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\approx-0.4.0\src\macros.rs:

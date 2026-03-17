@@ -39,6 +39,8 @@ class _PreviewTask(QRunnable):
 class PendingPreviewRequest:
     feature_state: PropellerFeatureState
     dirty_stages: list[str]
+    build_mode: str
+    requested_artifacts: list[str]
 
 
 class PropellerPreviewService(QObject):
@@ -65,10 +67,14 @@ class PropellerPreviewService(QObject):
         self,
         feature_state: PropellerFeatureState,
         dirty_stages: list[str],
+        build_mode: str = "preview",
+        requested_artifacts: list[str] | None = None,
     ) -> None:
         self._pending_request = PendingPreviewRequest(
             feature_state=feature_state.clone(),
             dirty_stages=list(dirty_stages),
+            build_mode=build_mode,
+            requested_artifacts=list(requested_artifacts or []),
         )
         self._debounce.start()
 
@@ -82,6 +88,8 @@ class PropellerPreviewService(QObject):
         request = PropellerPreviewRequestDTO(
             feature_state=pending.feature_state,
             dirty_stages=pending.dirty_stages,
+            build_mode=pending.build_mode,
+            requested_artifacts=pending.requested_artifacts,
         )
         self.preview_started.emit(request.dirty_stages)
 
