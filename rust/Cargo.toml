@@ -1,0 +1,3 @@
+[workspace]
+members = ["rotorlab_propeller_preview"]
+resolver = "2"

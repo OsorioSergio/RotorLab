@@ -82,6 +82,23 @@ RIBBON_LAYOUTS: dict[str, tuple[RibbonGroupDef, ...]] = {
             ),
         ),
     ),
+    "Advanced Propeller": (
+        RibbonGroupDef(
+            "Preview",
+            (
+                RibbonActionDef("Rebuild Preview", "Rebuild\nPreview", "large", "P"),
+                RibbonActionDef("Validate Propeller", "Validate", "small", "V"),
+                RibbonActionDef("Reset View", "Reset View", "small", "Rv"),
+            ),
+        ),
+        RibbonGroupDef(
+            "Visibility",
+            (
+                RibbonActionDef("Toggle Mesh", "Toggle Mesh", "small", "M"),
+                RibbonActionDef("Toggle Sections", "Toggle Sections", "small", "S"),
+            ),
+        ),
+    ),
     "Simulation": (
         RibbonGroupDef(
             "Setup",

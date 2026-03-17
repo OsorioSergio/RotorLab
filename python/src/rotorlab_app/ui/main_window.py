@@ -22,6 +22,12 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from rotorlab_app.models.propeller import (
+    ADVANCED_PROPELLER_MODULE_TYPE,
+    PropellerEnvironmentSession,
+    create_default_propeller_feature_state,
+)
+from rotorlab_app.ui.advanced_propeller import AdvancedPropellerWorkspace
 from rotorlab_app.ui.orchestrate import OrchestrateWorkspace
 from rotorlab_app.ui.ribbon import ContextRibbon
 from rotorlab_app.ui.typography import (
@@ -135,6 +141,8 @@ class TabContext:
     environment: str
     object_name: str
     tab_id: int
+    node_id: str | None = None
+    module_type: str | None = None
 
 
 class ConsoleDialog(QDialog):
@@ -399,6 +407,7 @@ class RotorLabMainWindow(QMainWindow):
         self._next_tab_id = 1
         self._tab_context_by_id: dict[int, TabContext] = {}
         self._tab_widget_by_id: dict[int, QWidget] = {}
+        self._propeller_sessions_by_node_id: dict[str, PropellerEnvironmentSession] = {}
 
         self.title_bar = TitleBar(self, self._row_height)
         self.title_bar.global_action_triggered.connect(self._on_global_action)
@@ -419,6 +428,7 @@ class RotorLabMainWindow(QMainWindow):
         self.workspace_stack = QStackedWidget(self)
         self.orchestrate = OrchestrateWorkspace(self)
         self.orchestrate.status_message.connect(self._update_state)
+        self.orchestrate.node_activated.connect(self._on_module_activated)
 
         self._create_shell_layout()
         self._build_status_bar()
@@ -488,13 +498,23 @@ class RotorLabMainWindow(QMainWindow):
         self._rebuild_context_ribbon(context)
         self.log("Orchestrate environment initialized.")
 
-    def open_environment_tab(self, environment: str, object_name: str) -> None:
+    def open_environment_tab(
+        self,
+        environment: str,
+        object_name: str,
+        node_id: str | None = None,
+        module_type: str | None = None,
+    ) -> None:
         for index in range(self.environment_tabs.count()):
             tab_id = self.environment_tabs.tabData(index)
             if tab_id is None:
                 continue
             context = self._tab_context_by_id[int(tab_id)]
-            if context.environment == environment and context.object_name == object_name:
+            if node_id is not None and context.node_id == node_id:
+                self.environment_tabs.setCurrentIndex(index)
+                self._update_state(f"Focused existing tab: {environment}: {object_name}")
+                return
+            if node_id is None and context.environment == environment and context.object_name == object_name:
                 self.environment_tabs.setCurrentIndex(index)
                 self._update_state(f"Focused existing tab: {environment}: {object_name}")
                 return
@@ -505,15 +525,45 @@ class RotorLabMainWindow(QMainWindow):
         tab_index = self.environment_tabs.addTab(label)
         self.environment_tabs.setTabData(tab_index, tab_id)
 
-        placeholder = self._create_environment_placeholder(environment, object_name)
-        self.workspace_stack.addWidget(placeholder)
+        widget = self._create_environment_widget(environment, object_name, node_id, module_type)
+        current_colors = THEMES.get(self._current_theme)
+        if current_colors is not None and hasattr(widget, "apply_theme"):
+            widget.apply_theme(current_colors)  # type: ignore[attr-defined]
+        if hasattr(widget, "apply_typography"):
+            widget.apply_typography(self._typography_profile)  # type: ignore[attr-defined]
+        self.workspace_stack.addWidget(widget)
 
-        context = TabContext(environment=environment, object_name=object_name, tab_id=tab_id)
+        context = TabContext(
+            environment=environment,
+            object_name=object_name,
+            tab_id=tab_id,
+            node_id=node_id,
+            module_type=module_type,
+        )
         self._tab_context_by_id[tab_id] = context
-        self._tab_widget_by_id[tab_id] = placeholder
+        self._tab_widget_by_id[tab_id] = widget
 
         self.environment_tabs.setCurrentIndex(tab_index)
         self._update_state(f"Opened {label}")
+
+    def _create_environment_widget(
+        self,
+        environment: str,
+        object_name: str,
+        node_id: str | None,
+        module_type: str | None,
+    ) -> QWidget:
+        if environment == "Advanced Propeller" and node_id is not None:
+            session = self._propeller_sessions_by_node_id.get(node_id)
+            if session is None:
+                session = PropellerEnvironmentSession(
+                    feature_state=create_default_propeller_feature_state(node_id, object_name)
+                )
+                self._propeller_sessions_by_node_id[node_id] = session
+            workspace = AdvancedPropellerWorkspace(session, self)
+            workspace.status_message.connect(self._update_state)
+            return workspace
+        return self._create_environment_placeholder(environment, object_name)
 
     def _create_environment_placeholder(self, environment: str, object_name: str) -> QWidget:
         widget = QWidget(self)
@@ -578,6 +628,11 @@ class RotorLabMainWindow(QMainWindow):
         self.context_ribbon.set_environment(context.environment)
 
     def _on_context_ribbon_action(self, action_name: str) -> None:
+        current_widget = self.workspace_stack.currentWidget()
+        if current_widget is not None and hasattr(current_widget, "handle_action"):
+            handled = current_widget.handle_action(action_name)  # type: ignore[attr-defined]
+            if handled:
+                return
         if action_name == "Open CAD Tab":
             self.open_environment_tab("CAD", "Propeller_01")
             return
@@ -605,6 +660,24 @@ class RotorLabMainWindow(QMainWindow):
         self.log(f"Context action triggered: {action_name}")
         self._update_state(action_name)
 
+    def _on_module_activated(self, request) -> None:
+        environment = "Results"
+        if request.module_type == ADVANCED_PROPELLER_MODULE_TYPE:
+            environment = "Advanced Propeller"
+        elif request.category == "Geometry":
+            environment = "CAD"
+        elif request.category == "Simulation":
+            environment = "Simulation"
+        elif request.category == "Analysis" or request.category == "Results":
+            environment = "Results"
+
+        self.open_environment_tab(
+            environment,
+            request.module_name,
+            node_id=request.node_id,
+            module_type=request.module_type,
+        )
+
     def _open_console_dialog(self) -> None:
         dialog = ConsoleDialog(self._logs, self._typography_profile, self)
         dialog.exec()
@@ -617,7 +690,9 @@ class RotorLabMainWindow(QMainWindow):
         self._current_theme = theme_name
         self.title_bar.apply_theme(colors)
         self.context_ribbon.apply_theme(colors)
-        self.orchestrate.apply_theme(colors)
+        for widget in self._tab_widget_by_id.values():
+            if hasattr(widget, "apply_theme"):
+                widget.apply_theme(colors)  # type: ignore[attr-defined]
 
         self.setStyleSheet(
             f"""
@@ -735,7 +810,6 @@ class RotorLabMainWindow(QMainWindow):
 
         self.title_bar.apply_typography(self._typography_profile)
         self.context_ribbon.apply_typography(self._typography_profile)
-        self.orchestrate.apply_typography(self._typography_profile)
 
         self._typography.apply(self.environment_tabs, TypographyRole.TAB_LABEL)
         self._typography.apply(self.state_label, TypographyRole.STATUS)
@@ -746,7 +820,9 @@ class RotorLabMainWindow(QMainWindow):
             self._typography.apply(status_bar, TypographyRole.STATUS)
 
         for widget in self._tab_widget_by_id.values():
-            if widget.objectName() == "EnvironmentPlaceholder":
+            if hasattr(widget, "apply_typography"):
+                widget.apply_typography(self._typography_profile)  # type: ignore[attr-defined]
+            elif widget.objectName() == "EnvironmentPlaceholder":
                 self._apply_placeholder_typography(widget)
 
     def changeEvent(self, event) -> None:  # type: ignore[override]

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 import json
 from dataclasses import dataclass
 
@@ -24,25 +25,35 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from rotorlab_app.models.propeller import ADVANCED_PROPELLER_MODULE_TYPE
 from rotorlab_app.ui.typography import TypographyManager, TypographyProfile, TypographyRole
 
 
 @dataclass(frozen=True)
 class ModuleTemplate:
+    template_id: str
     category: str
     name: str
+    payload: dict[str, object] | None = None
 
 
 @dataclass(frozen=True)
 class ModuleDragPayload:
     name: str
     category: str
+    template_id: str | None = None
 
     MIME_TYPE = "application/x-rotorlab-module"
 
     def encode(self, mime_data: QMimeData) -> None:
         mime_data.setText(self.name)
-        raw = json.dumps({"name": self.name, "category": self.category}).encode("utf-8")
+        raw = json.dumps(
+            {
+                "name": self.name,
+                "category": self.category,
+                "template_id": self.template_id,
+            }
+        ).encode("utf-8")
         mime_data.setData(self.MIME_TYPE, raw)
 
     @classmethod
@@ -52,31 +63,44 @@ class ModuleDragPayload:
                 payload = json.loads(bytes(mime_data.data(cls.MIME_TYPE)).decode("utf-8"))
                 name = str(payload.get("name", "")).strip()
                 category = str(payload.get("category", "")).strip()
+                template_id = payload.get("template_id")
+                template_id_value = str(template_id).strip() if template_id is not None else None
                 if name and category:
-                    return cls(name=name, category=category)
+                    return cls(name=name, category=category, template_id=template_id_value)
             except (TypeError, ValueError, json.JSONDecodeError):
                 pass
 
         if mime_data.hasText():
             name = mime_data.text().strip()
             if name:
-                return cls(name=name, category="Analysis")
+                return cls(name=name, category="Analysis", template_id=None)
         return None
 
 
 DEFAULT_MODULE_TEMPLATES: tuple[ModuleTemplate, ...] = (
-    ModuleTemplate("Geometry", "Blade Profile Generator"),
-    ModuleTemplate("Geometry", "Propeller Parametric Builder"),
-    ModuleTemplate("Simulation", "BEMT Solver Setup"),
-    ModuleTemplate("Simulation", "CFD Export Setup"),
-    ModuleTemplate("Filter", "Mesh Quality Filter"),
-    ModuleTemplate("Analysis", "Performance Curve Analysis"),
-    ModuleTemplate("Results", "Acoustic Plot"),
+    ModuleTemplate("geometry.blade_profile_generator", "Geometry", "Blade Profile Generator"),
+    ModuleTemplate(
+        ADVANCED_PROPELLER_MODULE_TYPE,
+        "Geometry",
+        "Propeller Parametric Builder",
+        payload={"environment": "advanced_propeller"},
+    ),
+    ModuleTemplate("simulation.bemt_solver_setup", "Simulation", "BEMT Solver Setup"),
+    ModuleTemplate("simulation.cfd_export_setup", "Simulation", "CFD Export Setup"),
+    ModuleTemplate("filter.mesh_quality_filter", "Filter", "Mesh Quality Filter"),
+    ModuleTemplate("analysis.performance_curve_analysis", "Analysis", "Performance Curve Analysis"),
+    ModuleTemplate("results.acoustic_plot", "Results", "Acoustic Plot"),
 )
 
 
 MODULE_CATEGORY_BY_NAME: dict[str, str] = {
     template.name: template.category for template in DEFAULT_MODULE_TEMPLATES
+}
+MODULE_TEMPLATE_BY_NAME: dict[str, ModuleTemplate] = {
+    template.name: template for template in DEFAULT_MODULE_TEMPLATES
+}
+MODULE_TYPE_BY_NAME: dict[str, str] = {
+    template.name: template.template_id for template in DEFAULT_MODULE_TEMPLATES
 }
 
 
@@ -152,6 +176,7 @@ class ModuleLibraryTree(QTreeWidget):
             module_item = QTreeWidgetItem([template.name])
             module_item.setData(0, Qt.ItemDataRole.UserRole, template.name)
             module_item.setData(0, Qt.ItemDataRole.UserRole + 1, template.category)
+            module_item.setData(0, Qt.ItemDataRole.UserRole + 2, template.template_id)
             module_item.setFlags(
                 Qt.ItemFlag.ItemIsEnabled
                 | Qt.ItemFlag.ItemIsSelectable
@@ -190,7 +215,12 @@ class ModuleLibraryTree(QTreeWidget):
         drag = QDrag(self)
         mime_data = QMimeData()
         module_category = str(item.data(0, Qt.ItemDataRole.UserRole + 1) or "Analysis")
-        ModuleDragPayload(name=str(module_name), category=module_category).encode(mime_data)
+        template_id = item.data(0, Qt.ItemDataRole.UserRole + 2)
+        ModuleDragPayload(
+            name=str(module_name),
+            category=module_category,
+            template_id=str(template_id) if template_id else None,
+        ).encode(mime_data)
         drag.setMimeData(mime_data)
         drag.setPixmap(item.icon(0).pixmap(16, 16))
         drag.exec(supported_actions)
@@ -276,6 +306,7 @@ class ModuleIconRailList(QListWidget):
             item = QListWidgetItem(" ")
             item.setData(Qt.ItemDataRole.UserRole, template.name)
             item.setData(Qt.ItemDataRole.UserRole + 1, template.category)
+            item.setData(Qt.ItemDataRole.UserRole + 2, template.template_id)
             item.setToolTip(template.name)
             item.setIcon(self._build_module_icon(template.name))
             item.setSizeHint(QSize(28, 28))
@@ -303,7 +334,12 @@ class ModuleIconRailList(QListWidget):
         drag = QDrag(self)
         mime_data = QMimeData()
         module_category = str(item.data(Qt.ItemDataRole.UserRole + 1) or "Analysis")
-        ModuleDragPayload(name=str(module_name), category=module_category).encode(mime_data)
+        template_id = item.data(Qt.ItemDataRole.UserRole + 2)
+        ModuleDragPayload(
+            name=str(module_name),
+            category=module_category,
+            template_id=str(template_id) if template_id else None,
+        ).encode(mime_data)
         drag.setMimeData(mime_data)
         drag.setPixmap(item.icon().pixmap(18, 18))
         drag.exec(supported_actions)
@@ -477,8 +513,10 @@ class GridModule:
     id: str
     name: str
     category: str
+    module_type: str
     capability: ModuleCapability
     coord: GridCoord
+    payload: dict[str, object] | None = None
 
 
 @dataclass(frozen=True)
@@ -486,8 +524,10 @@ class GridModuleDTO:
     id: str
     name: str
     category: str
+    module_type: str
     row: int
     col: int
+    payload: dict[str, object] | None = None
 
 
 @dataclass(frozen=True)
@@ -519,6 +559,14 @@ class WorkflowGraphSnapshotDTO:
 
 
 GridSnapshotDTO = WorkflowGraphSnapshotDTO
+
+
+@dataclass(frozen=True)
+class ModuleActivationRequest:
+    node_id: str
+    module_name: str
+    category: str
+    module_type: str
 
 
 @dataclass(frozen=True)
@@ -602,6 +650,8 @@ class WorkflowGridState:
         col: int,
         module_name: str,
         module_category: str,
+        module_type: str | None = None,
+        payload: dict[str, object] | None = None,
     ) -> GridModule:
         updated: dict[str, GridModule] = {}
         for module in self._modules.values():
@@ -610,14 +660,16 @@ class WorkflowGridState:
                     id=module.id,
                     name=module.name,
                     category=module.category,
+                    module_type=module.module_type,
                     capability=module.capability,
                     coord=GridCoord(row=row, col=module.coord.col + 1),
+                    payload=deepcopy(module.payload),
                 )
                 continue
             updated[module.id] = module
 
         self._modules = updated
-        return self._append_module(module_name, module_category, row, col)
+        return self._append_module(module_name, module_category, row, col, module_type, payload)
 
     def insert_row(
         self,
@@ -625,6 +677,8 @@ class WorkflowGridState:
         col: int,
         module_name: str,
         module_category: str,
+        module_type: str | None = None,
+        payload: dict[str, object] | None = None,
     ) -> GridModule:
         updated: dict[str, GridModule] = {}
         for module in self._modules.values():
@@ -633,14 +687,16 @@ class WorkflowGridState:
                     id=module.id,
                     name=module.name,
                     category=module.category,
+                    module_type=module.module_type,
                     capability=module.capability,
                     coord=GridCoord(row=module.coord.row + 1, col=module.coord.col),
+                    payload=deepcopy(module.payload),
                 )
                 continue
             updated[module.id] = module
 
         self._modules = updated
-        return self._append_module(module_name, module_category, row, col)
+        return self._append_module(module_name, module_category, row, col, module_type, payload)
 
     def validate_connection(
         self,
@@ -708,8 +764,10 @@ class WorkflowGridState:
                 id=module.id,
                 name=module.name,
                 category=module.category,
+                module_type=module.module_type,
                 row=module.coord.row,
                 col=module.coord.col,
+                payload=deepcopy(module.payload),
             )
             for module in ordered
         ]
@@ -729,6 +787,8 @@ class WorkflowGridState:
         module_category: str,
         row: int,
         col: int,
+        module_type: str | None = None,
+        payload: dict[str, object] | None = None,
     ) -> GridModule:
         module_id = f"node-{self._next_id}"
         self._next_id += 1
@@ -737,8 +797,10 @@ class WorkflowGridState:
             id=module_id,
             name=module_name,
             category=capability.category,
+            module_type=module_type or MODULE_TYPE_BY_NAME.get(module_name, module_name.lower().replace(" ", "_")),
             capability=capability,
             coord=GridCoord(row=row, col=col),
+            payload=deepcopy(payload),
         )
         self._modules[module_id] = module
         return module
@@ -788,6 +850,7 @@ class ConnectionPathItem(QGraphicsPathItem):
 
 class WorkflowCanvasScene(QGraphicsScene):
     graph_changed = pyqtSignal(object)
+    node_activated = pyqtSignal(object)
     status_message = pyqtSignal(str)
 
     NODE_WIDTH = 196
@@ -867,6 +930,7 @@ class WorkflowCanvasScene(QGraphicsScene):
         module_name: str,
         scene_point: QPointF,
         module_category: str | None = None,
+        module_type: str | None = None,
     ) -> DropPlacementResult | None:
         if not module_name:
             self._clear_overlays()
@@ -881,6 +945,8 @@ class WorkflowCanvasScene(QGraphicsScene):
             return None
 
         resolved_category = self._resolve_module_category(module_name, module_category)
+        resolved_module_type = self._resolve_module_type(module_name, module_type)
+        payload = self._default_payload(module_name)
         applied_target = target
         if target.kind in (self.PLACEMENT_EMPTY, self.PLACEMENT_COLUMN):
             module = self._grid.insert_in_row(
@@ -888,6 +954,8 @@ class WorkflowCanvasScene(QGraphicsScene):
                 target.col,
                 module_name,
                 resolved_category,
+                resolved_module_type,
+                payload,
             )
         elif target.kind == self.PLACEMENT_ROW:
             module = self._grid.insert_row(
@@ -895,6 +963,8 @@ class WorkflowCanvasScene(QGraphicsScene):
                 target.col,
                 module_name,
                 resolved_category,
+                resolved_module_type,
+                payload,
             )
         else:
             self._clear_overlays()
@@ -909,6 +979,20 @@ class WorkflowCanvasScene(QGraphicsScene):
         )
         self._clear_overlays()
         return self._last_drop_result
+
+    def activate_node(self, node_id: str) -> bool:
+        module = self._grid.get_module(node_id)
+        if module is None:
+            return False
+        self.node_activated.emit(
+            ModuleActivationRequest(
+                node_id=module.id,
+                module_name=module.name,
+                category=module.category,
+                module_type=module.module_type,
+            )
+        )
+        return True
 
     def create_connection(
         self,
@@ -1046,6 +1130,14 @@ class WorkflowCanvasScene(QGraphicsScene):
         super().mouseReleaseEvent(event)
         self._refresh_connection_styles()
 
+    def mouseDoubleClickEvent(self, event) -> None:  # type: ignore[override]
+        module = self._module_at(event.scenePos())
+        if module is not None:
+            self.activate_node(module.id)
+            event.accept()
+            return
+        super().mouseDoubleClickEvent(event)
+
     def _render_grid_nodes(self) -> None:
         self._clear_connection_draft()
         self._clear_connection_items()
@@ -1064,6 +1156,9 @@ class WorkflowCanvasScene(QGraphicsScene):
             rect_item.setBrush(self._node_fill)
             rect_item.setPen(QPen(self._node_border, 1))
             rect_item.setZValue(1)
+            rect_item.setData(0, module.id)
+            rect_item.setData(1, module.module_type)
+            rect_item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, True)
             self.addItem(rect_item)
             self._node_items.append(rect_item)
 
@@ -1283,6 +1378,27 @@ class WorkflowCanvasScene(QGraphicsScene):
             return module_category
         return MODULE_CATEGORY_BY_NAME.get(module_name, "Analysis")
 
+    def _resolve_module_type(self, module_name: str, module_type: str | None) -> str:
+        if module_type:
+            return module_type
+        return MODULE_TYPE_BY_NAME.get(module_name, module_name.lower().replace(" ", "_"))
+
+    def _default_payload(self, module_name: str) -> dict[str, object] | None:
+        template = MODULE_TEMPLATE_BY_NAME.get(module_name)
+        if template is None or template.payload is None:
+            return None
+        return deepcopy(template.payload)
+
+    def _module_at(self, point: QPointF) -> GridModule | None:
+        for item in self.items(point):
+            current_item: QGraphicsItem | None = item
+            while current_item is not None:
+                node_id = current_item.data(0)
+                if isinstance(node_id, str):
+                    return self._grid.get_module(node_id)
+                current_item = current_item.parentItem()
+        return None
+
     def _truncate_label(self, value: str, limit: int) -> str:
         if len(value) <= limit:
             return value
@@ -1454,7 +1570,12 @@ class WorkflowCanvasView(QGraphicsView):
             return
 
         scene_point = self.mapToScene(event.position().toPoint())
-        if self.drop_module_at_scene_point(payload.name, scene_point, payload.category):
+        if self.drop_module_at_scene_point(
+            payload.name,
+            scene_point,
+            payload.category,
+            payload.template_id,
+        ):
             event.acceptProposedAction()
             return
 
@@ -1469,9 +1590,10 @@ class WorkflowCanvasView(QGraphicsView):
         module_name: str,
         scene_point: QPointF,
         module_category: str | None = None,
+        module_type: str | None = None,
     ) -> bool:
         scene = self._workflow_scene()
-        result = scene.commit_module_drop(module_name, scene_point, module_category)
+        result = scene.commit_module_drop(module_name, scene_point, module_category, module_type)
         if result is None:
             return False
 
@@ -1493,6 +1615,7 @@ class WorkflowCanvasView(QGraphicsView):
 
 
 class OrchestrateWorkspace(QWidget):
+    node_activated = pyqtSignal(object)
     status_message = pyqtSignal(str)
     grid_changed = pyqtSignal(object)
 
@@ -1506,6 +1629,7 @@ class OrchestrateWorkspace(QWidget):
         self.canvas.module_dropped.connect(self._on_module_dropped)
         self.canvas.grid_changed.connect(self._on_grid_changed)
         self.scene.graph_changed.connect(self._on_grid_changed)
+        self.scene.node_activated.connect(self.node_activated.emit)
         self.scene.status_message.connect(self.status_message.emit)
 
         splitter = QSplitter(Qt.Orientation.Horizontal, self)
