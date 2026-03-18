@@ -715,9 +715,12 @@ fn build_preview_mesh(
     let blade_side_mesh = tessellate_surface(&blade_surface, rows, cols);
     let root_cap_mesh = tessellate_surface(&root_cap_surface, (rows / 3).max(6), cols);
     let tip_cap_mesh = tessellate_surface(&tip_artifact.tip_surface, (rows / 3).max(6), cols);
-    let hub_side_mesh = tessellate_surface(&hub_artifact.hub_surface, (rows / 3).max(10), cols);
-    let hub_fore_mesh = tessellate_surface(&hub_artifact.fore_cap_surface, 6, cols);
-    let hub_aft_mesh = tessellate_surface(&hub_artifact.aft_cap_surface, 6, cols);
+    let mut hub_side_mesh = tessellate_surface(&hub_artifact.hub_surface, (rows / 3).max(10), cols);
+    orient_mesh_outward_radial(&mut hub_side_mesh);
+    let mut hub_fore_mesh = tessellate_surface(&hub_artifact.fore_cap_surface, 6, cols);
+    orient_mesh_outward_axis(&mut hub_fore_mesh, -1.0);
+    let mut hub_aft_mesh = tessellate_surface(&hub_artifact.aft_cap_surface, 6, cols);
+    orient_mesh_outward_axis(&mut hub_aft_mesh, 1.0);
 
     let mut assembled_vertices = Vec::<[f64; 3]>::new();
     let mut assembled_faces = Vec::<[usize; 3]>::new();
@@ -1061,6 +1064,66 @@ fn tessellate_surface(surface: &BSplineSurface<Point3>, rows: usize, cols: usize
     MeshPart { vertices, faces }
 }
 
+fn flip_mesh_winding(mesh: &mut MeshPart) {
+    for face in &mut mesh.faces {
+        face.swap(1, 2);
+    }
+}
+
+fn mesh_face_centroid(mesh: &MeshPart, face: [usize; 3]) -> [f64; 3] {
+    let points = [
+        mesh.vertices[face[0]],
+        mesh.vertices[face[1]],
+        mesh.vertices[face[2]],
+    ];
+    scale3(add3(add3(points[0], points[1]), points[2]), 1.0 / 3.0)
+}
+
+fn mesh_face_normal(mesh: &MeshPart, face: [usize; 3]) -> Option<[f64; 3]> {
+    let first = mesh.vertices[face[0]];
+    let second = mesh.vertices[face[1]];
+    let third = mesh.vertices[face[2]];
+    let normal = cross3(subtract3(second, first), subtract3(third, first));
+    let magnitude = length3(normal);
+    if magnitude <= 1e-9 {
+        return None;
+    }
+    Some(scale3(normal, 1.0 / magnitude))
+}
+
+fn orient_mesh_winding(
+    mesh: &mut MeshPart,
+    mut reference_direction: impl FnMut([f64; 3]) -> [f64; 3],
+) {
+    let mut alignment_sum = 0.0;
+    let mut sample_count = 0usize;
+
+    for &face in &mesh.faces {
+        let Some(normal) = mesh_face_normal(mesh, face) else {
+            continue;
+        };
+        let reference = reference_direction(mesh_face_centroid(mesh, face));
+        let reference_length = length3(reference);
+        if reference_length <= 1e-9 {
+            continue;
+        }
+        alignment_sum += dot3(normal, scale3(reference, 1.0 / reference_length));
+        sample_count += 1;
+    }
+
+    if sample_count > 0 && alignment_sum < 0.0 {
+        flip_mesh_winding(mesh);
+    }
+}
+
+fn orient_mesh_outward_radial(mesh: &mut MeshPart) {
+    orient_mesh_winding(mesh, |centroid| [centroid[0], centroid[1], 0.0]);
+}
+
+fn orient_mesh_outward_axis(mesh: &mut MeshPart, axis_sign: f64) {
+    orient_mesh_winding(mesh, |_| [0.0, 0.0, axis_sign]);
+}
+
 fn append_mesh(
     target_vertices: &mut Vec<[f64; 3]>,
     target_faces: &mut Vec<[usize; 3]>,
@@ -1368,8 +1431,16 @@ fn add3(left: [f64; 3], right: [f64; 3]) -> [f64; 3] {
     [left[0] + right[0], left[1] + right[1], left[2] + right[2]]
 }
 
+fn subtract3(left: [f64; 3], right: [f64; 3]) -> [f64; 3] {
+    [left[0] - right[0], left[1] - right[1], left[2] - right[2]]
+}
+
 fn scale3(vector: [f64; 3], factor: f64) -> [f64; 3] {
     [vector[0] * factor, vector[1] * factor, vector[2] * factor]
+}
+
+fn dot3(left: [f64; 3], right: [f64; 3]) -> f64 {
+    left[0] * right[0] + left[1] * right[1] + left[2] * right[2]
 }
 
 fn cross3(left: [f64; 3], right: [f64; 3]) -> [f64; 3] {
@@ -1380,8 +1451,12 @@ fn cross3(left: [f64; 3], right: [f64; 3]) -> [f64; 3] {
     ]
 }
 
+fn length3(vector: [f64; 3]) -> f64 {
+    dot3(vector, vector).sqrt()
+}
+
 fn normalize3(vector: [f64; 3]) -> [f64; 3] {
-    let norm = (vector[0] * vector[0] + vector[1] * vector[1] + vector[2] * vector[2]).sqrt();
+    let norm = length3(vector);
     if norm <= 1e-9 {
         [0.0, 0.0, 1.0]
     } else {
@@ -1442,6 +1517,33 @@ mod tests {
 
     fn reset_build_cache() {
         build_cache().lock().expect("cache lock").clear();
+    }
+
+    fn average_alignment(
+        mesh: &MeshPart,
+        mut reference_direction: impl FnMut([f64; 3]) -> [f64; 3],
+    ) -> Option<f64> {
+        let mut alignment_sum = 0.0;
+        let mut sample_count = 0usize;
+
+        for &face in &mesh.faces {
+            let Some(normal) = mesh_face_normal(mesh, face) else {
+                continue;
+            };
+            let reference = reference_direction(mesh_face_centroid(mesh, face));
+            let reference_length = length3(reference);
+            if reference_length <= 1e-9 {
+                continue;
+            }
+            alignment_sum += dot3(normal, scale3(reference, 1.0 / reference_length));
+            sample_count += 1;
+        }
+
+        if sample_count == 0 {
+            None
+        } else {
+            Some(alignment_sum / sample_count as f64)
+        }
     }
 
     #[test]
@@ -1507,6 +1609,90 @@ mod tests {
                 "diagnostics".to_string()
             ]
         );
+    }
+
+    #[test]
+    fn hub_mesh_parts_are_oriented_outward_for_lighting() {
+        reset_build_cache();
+        let state = default_feature_state("test-node-hub-lighting");
+        let hub_artifact = build_hub_stage(&state).expect("hub stage should succeed");
+        let rows = state.preview_settings.tessellation_rows.max(16);
+        let cols = state.preview_settings.tessellation_cols.max(48);
+
+        let mut hub_side_mesh =
+            tessellate_surface(&hub_artifact.hub_surface, (rows / 3).max(10), cols);
+        orient_mesh_outward_radial(&mut hub_side_mesh);
+        let side_alignment =
+            average_alignment(&hub_side_mesh, |centroid| [centroid[0], centroid[1], 0.0])
+                .expect("hub side should produce orientation samples");
+        assert!(side_alignment > 0.2);
+
+        let mut hub_fore_mesh = tessellate_surface(&hub_artifact.fore_cap_surface, 6, cols);
+        orient_mesh_outward_axis(&mut hub_fore_mesh, -1.0);
+        let fore_alignment = average_alignment(&hub_fore_mesh, |_| [0.0, 0.0, -1.0])
+            .expect("fore cap should produce orientation samples");
+        assert!(fore_alignment > 0.95);
+
+        let mut hub_aft_mesh = tessellate_surface(&hub_artifact.aft_cap_surface, 6, cols);
+        orient_mesh_outward_axis(&mut hub_aft_mesh, 1.0);
+        let aft_alignment = average_alignment(&hub_aft_mesh, |_| [0.0, 0.0, 1.0])
+            .expect("aft cap should produce orientation samples");
+        assert!(aft_alignment > 0.95);
+    }
+
+    #[test]
+    fn assembled_preview_keeps_hub_caps_facing_outward() {
+        reset_build_cache();
+        let state = default_feature_state("test-node-hub-caps");
+        let result = build_model_internal(&PropellerBuildRequestDto {
+            feature_state: state.clone(),
+            dirty_stages: vec![],
+        })
+        .expect("build should succeed");
+
+        let hub_radius = state.global_parameters.radius
+            * clamp(state.hub_parameters.hub_radius_ratio, 0.10, 0.45);
+        let length = state.global_parameters.radius
+            * 2.0
+            * clamp(state.hub_parameters.hub_length_ratio, 0.08, 0.70);
+        let fore_share = clamp(state.hub_parameters.fore_profile_split, 0.05, 0.95);
+        let aft_share = clamp(state.hub_parameters.aft_profile_split, 0.05, 0.95);
+        let share_sum = fore_share + aft_share;
+        let fore_len = length * (fore_share / share_sum);
+        let aft_len = length * (aft_share / share_sum);
+        let cap_radius_limit = hub_radius * 0.25;
+
+        let preview_mesh = MeshPart {
+            vertices: result.preview_mesh.vertices.clone(),
+            faces: result.preview_mesh.faces.clone(),
+        };
+        let mut fore_alignment_sum = 0.0;
+        let mut fore_samples = 0usize;
+        let mut aft_alignment_sum = 0.0;
+        let mut aft_samples = 0usize;
+
+        for &face in &preview_mesh.faces {
+            let Some(normal) = mesh_face_normal(&preview_mesh, face) else {
+                continue;
+            };
+            let centroid = mesh_face_centroid(&preview_mesh, face);
+            let radial = length3([centroid[0], centroid[1], 0.0]);
+            if radial > cap_radius_limit {
+                continue;
+            }
+            if centroid[2] < -fore_len * 0.85 {
+                fore_alignment_sum += normal[2];
+                fore_samples += 1;
+            } else if centroid[2] > aft_len * 0.85 {
+                aft_alignment_sum += normal[2];
+                aft_samples += 1;
+            }
+        }
+
+        assert!(fore_samples > 0);
+        assert!(aft_samples > 0);
+        assert!(fore_alignment_sum / (fore_samples as f64) < -0.95);
+        assert!(aft_alignment_sum / (aft_samples as f64) > 0.95);
     }
 
     #[test]
