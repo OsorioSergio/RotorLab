@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashMap};
 use std::f64::consts::PI;
+use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
 use truck_geometry::prelude::{BSplineSurface, KnotVec, ParametricSurface, Point3};
 
@@ -225,6 +226,37 @@ struct BuildMeshArtifact {
     model_metadata: PropellerModelMetadataDto,
 }
 
+#[derive(Debug, Clone)]
+struct CachedBuildArtifacts {
+    center_surface: CenterSurfaceArtifact,
+    profile_configurator: ProfileConfiguratorArtifact,
+    section_placement: SectionPlacementArtifact,
+    tip_artifact: TipArtifact,
+    hub_artifact: HubArtifact,
+    pattern_artifact: PatternArtifact,
+    build_mesh: BuildMeshArtifact,
+}
+
+static BUILD_CACHE: OnceLock<Mutex<HashMap<String, CachedBuildArtifacts>>> = OnceLock::new();
+
+fn build_cache() -> &'static Mutex<HashMap<String, CachedBuildArtifacts>> {
+    BUILD_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn load_cached_artifacts(node_id: &str) -> Option<CachedBuildArtifacts> {
+    let cache = build_cache().lock().ok()?;
+    cache.get(node_id).cloned()
+}
+
+fn store_cached_artifacts(node_id: &str, artifacts: CachedBuildArtifacts) {
+    if let Ok(mut cache) = build_cache().lock() {
+        if cache.len() >= 24 && !cache.contains_key(node_id) {
+            cache.clear();
+        }
+        cache.insert(node_id.to_string(), artifacts);
+    }
+}
+
 #[pyfunction]
 fn propeller_backend_contract() -> &'static str {
     BACKEND_CONTRACT
@@ -284,41 +316,109 @@ fn build_model_internal(
         .min()
         .unwrap_or(0);
     let state = &request.feature_state;
+    let cached_artifacts = load_cached_artifacts(&state.node_id);
+    let start_index = if start_index > 0 && cached_artifacts.is_none() {
+        0
+    } else {
+        start_index
+    };
     let mut timings = BTreeMap::new();
 
-    let start = Instant::now();
-    let center_surface = build_center_surface(state);
-    record_timing(&mut timings, start_index, 0, "center_surface", start);
+    let center_surface = if start_index > 0 {
+        match cached_artifacts.as_ref() {
+            Some(cache) => cache.center_surface.clone(),
+            None => build_center_surface(state),
+        }
+    } else {
+        let start = Instant::now();
+        let artifact = build_center_surface(state);
+        record_timing(&mut timings, start_index, 0, "center_surface", start);
+        artifact
+    };
 
-    let start = Instant::now();
-    let profile_configurator = build_profile_configurator(state);
-    record_timing(&mut timings, start_index, 1, "profile_configurator", start);
+    let profile_configurator = if start_index > 1 {
+        match cached_artifacts.as_ref() {
+            Some(cache) => cache.profile_configurator.clone(),
+            None => build_profile_configurator(state),
+        }
+    } else {
+        let start = Instant::now();
+        let artifact = build_profile_configurator(state);
+        record_timing(&mut timings, start_index, 1, "profile_configurator", start);
+        artifact
+    };
 
-    let start = Instant::now();
-    let section_placement = build_section_placement(state, &center_surface, &profile_configurator);
-    record_timing(&mut timings, start_index, 2, "section_placement", start);
+    let section_placement = if start_index > 2 {
+        match cached_artifacts.as_ref() {
+            Some(cache) => cache.section_placement.clone(),
+            None => build_section_placement(state, &center_surface, &profile_configurator),
+        }
+    } else {
+        let start = Instant::now();
+        let artifact = build_section_placement(state, &center_surface, &profile_configurator);
+        record_timing(&mut timings, start_index, 2, "section_placement", start);
+        artifact
+    };
 
-    let start = Instant::now();
-    let tip_artifact = build_tip_stage(state, &section_placement)?;
-    record_timing(&mut timings, start_index, 3, "tip", start);
+    let tip_artifact = if start_index > 3 {
+        match cached_artifacts.as_ref() {
+            Some(cache) => cache.tip_artifact.clone(),
+            None => build_tip_stage(state, &section_placement)?,
+        }
+    } else {
+        let start = Instant::now();
+        let artifact = build_tip_stage(state, &section_placement)?;
+        record_timing(&mut timings, start_index, 3, "tip", start);
+        artifact
+    };
 
-    let start = Instant::now();
-    let hub_artifact = build_hub_stage(state)?;
-    record_timing(&mut timings, start_index, 4, "hub", start);
+    let hub_artifact = if start_index > 4 {
+        match cached_artifacts.as_ref() {
+            Some(cache) => cache.hub_artifact.clone(),
+            None => build_hub_stage(state)?,
+        }
+    } else {
+        let start = Instant::now();
+        let artifact = build_hub_stage(state)?;
+        record_timing(&mut timings, start_index, 4, "hub", start);
+        artifact
+    };
 
-    let start = Instant::now();
-    let pattern_artifact = build_pattern_stage(state);
-    record_timing(&mut timings, start_index, 5, "pattern", start);
+    let pattern_artifact = if start_index > 5 {
+        match cached_artifacts.as_ref() {
+            Some(cache) => cache.pattern_artifact.clone(),
+            None => build_pattern_stage(state),
+        }
+    } else {
+        let start = Instant::now();
+        let artifact = build_pattern_stage(state);
+        record_timing(&mut timings, start_index, 5, "pattern", start);
+        artifact
+    };
 
-    let start = Instant::now();
-    let build_mesh = build_preview_mesh(
-        state,
-        &section_placement,
-        &tip_artifact,
-        &hub_artifact,
-        &pattern_artifact,
-    )?;
-    record_timing(&mut timings, start_index, 6, "blade_preview", start);
+    let build_mesh = if start_index > 6 {
+        match cached_artifacts.as_ref() {
+            Some(cache) => cache.build_mesh.clone(),
+            None => build_preview_mesh(
+                state,
+                &section_placement,
+                &tip_artifact,
+                &hub_artifact,
+                &pattern_artifact,
+            )?,
+        }
+    } else {
+        let start = Instant::now();
+        let artifact = build_preview_mesh(
+            state,
+            &section_placement,
+            &tip_artifact,
+            &hub_artifact,
+            &pattern_artifact,
+        )?;
+        record_timing(&mut timings, start_index, 6, "blade_preview", start);
+        artifact
+    };
 
     let start = Instant::now();
     let diagnostics = build_diagnostics(
@@ -337,6 +437,19 @@ fn build_model_internal(
         .collect::<Vec<_>>();
     let ok =
         !diagnostics.iter().any(|item| item.severity == "error") && build_mesh.model_metadata.valid;
+
+    store_cached_artifacts(
+        &state.node_id,
+        CachedBuildArtifacts {
+            center_surface: center_surface.clone(),
+            profile_configurator: profile_configurator.clone(),
+            section_placement: section_placement.clone(),
+            tip_artifact: tip_artifact.clone(),
+            hub_artifact: hub_artifact.clone(),
+            pattern_artifact: pattern_artifact.clone(),
+            build_mesh: build_mesh.clone(),
+        },
+    );
 
     Ok(PropellerBuildResponseDto {
         ok,
@@ -1327,8 +1440,13 @@ fn rotorlab_propeller_preview(_py: Python<'_>, module: &Bound<'_, PyModule>) -> 
 mod tests {
     use super::*;
 
+    fn reset_build_cache() {
+        build_cache().lock().expect("cache lock").clear();
+    }
+
     #[test]
     fn default_build_returns_truck_tessellated_mesh() {
+        reset_build_cache();
         let request = PropellerBuildRequestDto {
             feature_state: default_feature_state("test-node-a"),
             dirty_stages: vec![],
@@ -1350,12 +1468,36 @@ mod tests {
     }
 
     #[test]
-    fn dirty_stage_response_marks_downstream_stages() {
+    fn dirty_stage_without_cache_falls_back_to_full_rebuild() {
+        reset_build_cache();
         let request = PropellerBuildRequestDto {
             feature_state: default_feature_state("test-node-b"),
             dirty_stages: vec!["hub".to_string()],
         };
         let result = build_model_internal(&request).expect("build should succeed");
+        assert_eq!(
+            result.built_stages,
+            STAGE_ORDER
+                .iter()
+                .map(|stage| (*stage).to_string())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn dirty_stage_response_marks_only_downstream_stages_after_cache_warmup() {
+        reset_build_cache();
+        let state = default_feature_state("test-node-cache");
+        build_model_internal(&PropellerBuildRequestDto {
+            feature_state: state.clone(),
+            dirty_stages: vec![],
+        })
+        .expect("warm build should succeed");
+        let result = build_model_internal(&PropellerBuildRequestDto {
+            feature_state: state,
+            dirty_stages: vec!["hub".to_string()],
+        })
+        .expect("cached build should succeed");
         assert_eq!(
             result.built_stages,
             vec![
@@ -1369,6 +1511,7 @@ mod tests {
 
     #[test]
     fn invalid_axis_reports_error() {
+        reset_build_cache();
         let mut state = default_feature_state("test-node-c");
         state.pattern_parameters.axis_convention = "x".to_string();
         let result = build_model_internal(&PropellerBuildRequestDto {

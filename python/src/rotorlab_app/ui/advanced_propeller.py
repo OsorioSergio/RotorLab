@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
-from PyQt6.QtCore import QPoint, QPointF, Qt, pyqtSignal
+from PyQt6.QtCore import QPoint, QPointF, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QColor, QPainter, QPainterPath, QPen, QPolygonF
 from PyQt6.QtWidgets import (
     QCheckBox,
@@ -443,10 +443,20 @@ class PropellerViewportWidget(QWidget):
         self._last_pos = QPoint()
         self._drag_mode: str | None = None
         self._bounds_extent = 2.0
+        self._vertex_normals: list[tuple[float, float, float]] = []
+        self._interactive_preview = False
+        self._static_face_budget = 24000
+        self._interactive_face_budget = 6000
+        self._interaction_timer = QTimer(self)
+        self._interaction_timer.setSingleShot(True)
+        self._interaction_timer.setInterval(140)
+        self._interaction_timer.timeout.connect(self._settle_interaction)
 
     def set_preview_result(self, result: PropellerPreviewResult | None) -> None:
         self._preview_result = result
+        self._rebuild_surface_cache()
         self._fit_to_mesh()
+        self._settle_interaction()
         self.update()
 
     def mesh_face_count(self) -> int:
@@ -463,6 +473,7 @@ class PropellerViewportWidget(QWidget):
         self._yaw = -34.0
         self._pitch = 18.0
         self._fit_to_mesh()
+        self._settle_interaction()
         self.update()
 
     def apply_theme(self, colors: dict[str, str]) -> None:
@@ -477,7 +488,7 @@ class PropellerViewportWidget(QWidget):
 
     def paintEvent(self, event) -> None:  # type: ignore[override]
         painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, not self._interactive_preview)
         painter.fillRect(self.rect(), self._background)
         painter.setPen(QPen(self._border, 1))
         painter.drawRect(self.rect().adjusted(0, 0, -1, -1))
@@ -488,29 +499,52 @@ class PropellerViewportWidget(QWidget):
 
         projection = self._build_projection()
         eye, forward, right, up = projection
-        face_polygons: list[tuple[float, QPolygonF, QColor]] = []
         vertices = self._preview_result.mesh.vertices
-        for face in self._preview_result.mesh.faces:
-            world = [vertices[face[0]], vertices[face[1]], vertices[face[2]]]
-            projected = [self._project_point(point, eye, forward, right, up) for point in world]
+        faces = self._preview_result.mesh.faces
+        projected_vertices = [self._project_point(point, eye, forward, right, up) for point in vertices]
+        target_faces = self._interactive_face_budget if self._interactive_preview else self._static_face_budget
+        face_step = max(1, math.ceil(len(faces) / max(1, target_faces)))
+        show_wireframe = self._show_wireframe and not self._interactive_preview
+        face_polygons: list[tuple[float, QPolygonF, QColor]] = []
+        light_direction = _normalize((0.35, -0.28, 0.89))
+        for face_index in range(0, len(faces), face_step):
+            face = faces[face_index]
+            projected = (
+                projected_vertices[face[0]],
+                projected_vertices[face[1]],
+                projected_vertices[face[2]],
+            )
             if any(point is None for point in projected):
                 continue
             points = [point for point in projected if point is not None]
             polygon = QPolygonF([QPointF(point.x, point.y) for point in points])
-            normal = _normalize(_cross(_sub(world[1], world[0]), _sub(world[2], world[0])))
-            brightness = 0.25 + max(0.0, _dot(normal, _normalize((0.4, -0.35, 0.85)))) * 0.75
+            if self._vertex_normals:
+                n0 = self._vertex_normals[face[0]]
+                n1 = self._vertex_normals[face[1]]
+                n2 = self._vertex_normals[face[2]]
+                normal = _normalize(
+                    (
+                        n0[0] + n1[0] + n2[0],
+                        n0[1] + n1[1] + n2[1],
+                        n0[2] + n1[2] + n2[2],
+                    )
+                )
+            else:
+                world = [vertices[face[0]], vertices[face[1]], vertices[face[2]]]
+                normal = _normalize(_cross(_sub(world[1], world[0]), _sub(world[2], world[0])))
+            brightness = 0.34 + max(0.0, _dot(normal, light_direction)) * 0.66
             fill = QColor(self._mesh_fill)
-            fill.setAlpha(180)
-            fill = fill.lighter(int(100 * brightness + 20))
+            fill.setAlpha(216 if show_wireframe else 232)
+            fill = fill.lighter(int(100 * brightness + 18))
             face_polygons.append((sum(point.depth for point in points) / len(points), polygon, fill))
 
         face_polygons.sort(key=lambda item: item[0], reverse=True)
         for _depth, polygon, fill in face_polygons:
             painter.setBrush(fill if self._show_mesh else Qt.BrushStyle.NoBrush)
-            painter.setPen(QPen(self._mesh_wire if self._show_wireframe else fill, 1 if self._show_wireframe else 0))
+            painter.setPen(QPen(self._mesh_wire if show_wireframe else fill, 1 if show_wireframe else 0))
             painter.drawPolygon(polygon)
 
-        if self._preview_result.mesh.section_polylines:
+        if self._preview_result.mesh.section_polylines and not self._interactive_preview:
             painter.setPen(QPen(self._section_color, 1.2, Qt.PenStyle.DashLine))
             for polyline in self._preview_result.mesh.section_polylines:
                 path = QPainterPath()
@@ -531,6 +565,12 @@ class PropellerViewportWidget(QWidget):
         painter.drawText(16, 22, "Blade Preview")
         painter.setPen(self._muted)
         painter.drawText(16, 40, "Left drag: orbit | Right drag: pan | Wheel: zoom")
+        if face_step > 1:
+            painter.drawText(
+                16,
+                58,
+                f"Adaptive preview: {len(face_polygons):,} of {len(faces):,} faces",
+            )
 
     def mousePressEvent(self, event) -> None:  # type: ignore[override]
         self._last_pos = event.position().toPoint()
@@ -540,6 +580,8 @@ class PropellerViewportWidget(QWidget):
             self._drag_mode = "pan"
         else:
             self._drag_mode = None
+        if self._drag_mode is not None:
+            self._begin_interaction()
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event) -> None:  # type: ignore[override]
@@ -561,6 +603,7 @@ class PropellerViewportWidget(QWidget):
                 self._center[1] - right[1] * delta.x() * scale + up[1] * delta.y() * scale,
                 self._center[2] - right[2] * delta.x() * scale + up[2] * delta.y() * scale,
             )
+        self._begin_interaction()
         self.update()
         super().mouseMoveEvent(event)
 
@@ -571,8 +614,39 @@ class PropellerViewportWidget(QWidget):
     def wheelEvent(self, event) -> None:  # type: ignore[override]
         factor = 0.86 if event.angleDelta().y() > 0 else 1.16
         self._distance = max(self._bounds_extent * 0.6, min(self._bounds_extent * 30.0, self._distance * factor))
+        self._begin_interaction()
         self.update()
         super().wheelEvent(event)
+
+    def _begin_interaction(self) -> None:
+        self._interactive_preview = True
+        self._interaction_timer.start()
+
+    def _settle_interaction(self) -> None:
+        if not self._interactive_preview:
+            return
+        self._interactive_preview = False
+        self.update()
+
+    def _rebuild_surface_cache(self) -> None:
+        self._vertex_normals = []
+        if self._preview_result is None:
+            return
+        vertices = self._preview_result.mesh.vertices
+        faces = self._preview_result.mesh.faces
+        if not vertices or not faces:
+            return
+
+        accumulated = [[0.0, 0.0, 0.0] for _ in vertices]
+        for a, b, c in faces:
+            normal = _cross(_sub(vertices[b], vertices[a]), _sub(vertices[c], vertices[a]))
+            for index in (a, b, c):
+                accumulated[index][0] += normal[0]
+                accumulated[index][1] += normal[1]
+                accumulated[index][2] += normal[2]
+        self._vertex_normals = [
+            _normalize((normal[0], normal[1], normal[2])) for normal in accumulated
+        ]
 
     def _fit_to_mesh(self) -> None:
         if self._preview_result is None or not self._preview_result.mesh.vertices:
@@ -580,19 +654,28 @@ class PropellerViewportWidget(QWidget):
             self._distance = 4.0
             self._bounds_extent = 2.0
             return
-        vertices = self._preview_result.mesh.vertices
-        xs = [point[0] for point in vertices]
-        ys = [point[1] for point in vertices]
-        zs = [point[2] for point in vertices]
+        bounds_min = self._preview_result.model_metadata.bounds_min
+        bounds_max = self._preview_result.model_metadata.bounds_max
+        if len(bounds_min) == 3 and len(bounds_max) == 3:
+            min_x, min_y, min_z = bounds_min
+            max_x, max_y, max_z = bounds_max
+        else:
+            vertices = self._preview_result.mesh.vertices
+            xs = [point[0] for point in vertices]
+            ys = [point[1] for point in vertices]
+            zs = [point[2] for point in vertices]
+            min_x, max_x = min(xs), max(xs)
+            min_y, max_y = min(ys), max(ys)
+            min_z, max_z = min(zs), max(zs)
         self._center = (
-            (min(xs) + max(xs)) * 0.5,
-            (min(ys) + max(ys)) * 0.5,
-            (min(zs) + max(zs)) * 0.5,
+            (min_x + max_x) * 0.5,
+            (min_y + max_y) * 0.5,
+            (min_z + max_z) * 0.5,
         )
         self._bounds_extent = max(
-            max(xs) - min(xs),
-            max(ys) - min(ys),
-            max(zs) - min(zs),
+            max_x - min_x,
+            max_y - min_y,
+            max_z - min_z,
             1.0,
         )
         self._distance = self._bounds_extent * 2.2

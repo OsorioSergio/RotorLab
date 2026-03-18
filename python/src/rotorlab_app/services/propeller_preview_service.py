@@ -56,6 +56,7 @@ class PropellerBuildService(QObject):
         self._debounce.timeout.connect(self._submit_pending_request)
         self._pending_request: PendingBuildRequest | None = None
         self._active_request_id = 0
+        self._build_in_flight = False
 
     @property
     def using_rust_backend(self) -> bool:
@@ -80,7 +81,10 @@ class PropellerBuildService(QObject):
         pending = self._pending_request
         if pending is None:
             return
+        if self._build_in_flight:
+            return
 
+        self._pending_request = None
         self._active_request_id += 1
         request_id = self._active_request_id
         request = PropellerBuildRequestDTO(
@@ -88,6 +92,7 @@ class PropellerBuildService(QObject):
             dirty_stages=pending.dirty_stages,
         )
         self.build_started.emit(request.dirty_stages)
+        self._build_in_flight = True
 
         task = _BuildTask(request_id, self._bridge, request)
         task.signals.finished.connect(self._handle_task_finished)
@@ -95,14 +100,24 @@ class PropellerBuildService(QObject):
         self._thread_pool.start(task)
 
     def _handle_task_finished(self, request_id: int, result) -> None:
+        self._build_in_flight = False
         if request_id != self._active_request_id:
+            if self._pending_request is not None:
+                self._debounce.start()
             return
         self.build_ready.emit(result)
+        if self._pending_request is not None:
+            self._debounce.start()
 
     def _handle_task_failed(self, request_id: int, message: str) -> None:
+        self._build_in_flight = False
         if request_id != self._active_request_id:
+            if self._pending_request is not None:
+                self._debounce.start()
             return
         self.build_failed.emit(message)
+        if self._pending_request is not None:
+            self._debounce.start()
 
 
 PropellerPreviewService = PropellerBuildService

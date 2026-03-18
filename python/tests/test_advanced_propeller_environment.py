@@ -6,6 +6,7 @@ import rotorlab_app.services.propeller_preview_bridge as bridge_module
 from rotorlab_app.models.propeller import (
     ADVANCED_PROPELLER_MODULE_TYPE,
     ACTIVE_PROPELLER_STAGES,
+    create_default_propeller_feature_state,
 )
 from rotorlab_app.services.propeller_preview_service import PropellerBuildService
 from rotorlab_app.ui.advanced_propeller import AdvancedPropellerWorkspace
@@ -153,6 +154,13 @@ def test_advanced_propeller_workspace_rebuilds_after_tip_and_hub_edits(window, q
     assert after_tip_apex != initial_apex
     assert after_hub_bounds != after_tip_bounds
     assert workspace.session.last_result.model_metadata.source == "truck_tessellation"
+
+
+def test_default_preview_settings_favor_surface_rendering():
+    state = create_default_propeller_feature_state("preview-node", "Propeller")
+    assert state.preview_settings.show_mesh
+    assert not state.preview_settings.show_wireframe
+    assert not state.preview_settings.show_sections
 
 
 def test_build_service_reports_backend_missing(monkeypatch):

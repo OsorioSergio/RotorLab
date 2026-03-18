@@ -139,8 +139,8 @@ class PreviewSettings:
     tessellation_rows: int = 40
     tessellation_cols: int = 72
     show_mesh: bool = True
-    show_wireframe: bool = True
-    show_sections: bool = True
+    show_wireframe: bool = False
+    show_sections: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -163,8 +163,8 @@ class PreviewSettings:
             tessellation_rows=int(payload.get("tessellation_rows", 40)),
             tessellation_cols=int(payload.get("tessellation_cols", 72)),
             show_mesh=bool(payload.get("show_mesh", True)),
-            show_wireframe=bool(payload.get("show_wireframe", True)),
-            show_sections=bool(payload.get("show_sections", True)),
+            show_wireframe=bool(payload.get("show_wireframe", False)),
+            show_sections=bool(payload.get("show_sections", False)),
         )
 
 
