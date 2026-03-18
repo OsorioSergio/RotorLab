@@ -3,20 +3,33 @@ from __future__ import annotations
 import math
 
 import pytest
+from PyQt6.QtCore import QPoint, QPointF, Qt
+from PyQt6.QtGui import QPolygonF
 
 import rotorlab_app.services.propeller_preview_bridge as bridge_module
+import rotorlab_app.ui.advanced_propeller as advanced_propeller_module
 from rotorlab_app.models.propeller import (
     ADVANCED_PROPELLER_MODULE_TYPE,
     ACTIVE_PROPELLER_STAGES,
+    PropellerBuildRequestDTO,
     create_default_propeller_feature_state,
 )
+from rotorlab_app.services.propeller_preview_bridge import PropellerBuildBridge
 from rotorlab_app.services.propeller_preview_service import PropellerBuildService
 from rotorlab_app.ui.advanced_propeller import (
     AdvancedPropellerWorkspace,
     _OVERLAY_DEPTH_BIAS,
     _OVERLAY_PASS_CONFIG,
     _SURFACE_PASS_CONFIG,
+    _VIEWPORT_BACKGROUND_HEX,
+    _VIEWPORT_SURFACE_HEX,
+    _build_display_edges,
+    _build_view_cube_overlay,
+    _camera_state,
     _build_crease_aware_render_geometry,
+    _hit_test_view_cube_overlay,
+    _named_view_eye_direction,
+    _view_cube_label_transform,
 )
 from rotorlab_app.ui.main_window import RotorLabMainWindow
 from rotorlab_app.ui.orchestrate import WorkflowCanvasScene
@@ -171,6 +184,111 @@ def test_default_preview_settings_favor_surface_rendering():
     assert not state.preview_settings.show_sections
 
 
+def test_named_view_mapping_uses_true_model_axes():
+    assert _named_view_eye_direction("Top") == pytest.approx((0.0, 0.0, 1.0))
+    assert _named_view_eye_direction("Front") == pytest.approx((0.0, -1.0, 0.0))
+    assert _named_view_eye_direction("Right") == pytest.approx((1.0, 0.0, 0.0))
+    iso = _named_view_eye_direction("Top-Front-Right")
+    expected = 1.0 / math.sqrt(3.0)
+    assert iso == pytest.approx((expected, -expected, expected))
+
+
+def test_view_cube_overlay_exposes_visible_faces_and_hit_targets():
+    overlay = _build_view_cube_overlay(
+        _camera_state((0.0, 0.0, 0.0), 4.0, -45.0, 35.26438968),
+        900.0,
+        700.0,
+    )
+    visible_faces = {face.view_name for face in overlay.faces}
+    assert {"Top", "Front", "Right"}.issubset(visible_faces)
+
+    top_face = next(face for face in overlay.faces if face.view_name == "Top")
+    centroid = (
+        sum(point[0] for point in top_face.polygon) / len(top_face.polygon),
+        sum(point[1] for point in top_face.polygon) / len(top_face.polygon),
+    )
+    target = _hit_test_view_cube_overlay(overlay, centroid)
+    assert target is not None
+    assert target.view_name == "Top"
+
+
+def test_view_cube_hit_test_ignores_points_outside_overlay():
+    overlay = _build_view_cube_overlay(
+        _camera_state((0.0, 0.0, 0.0), 4.0, -45.0, 35.26438968),
+        900.0,
+        700.0,
+    )
+    assert _hit_test_view_cube_overlay(overlay, (24.0, 24.0)) is None
+
+
+def test_view_cube_label_transform_maps_text_center_inside_face_polygon():
+    overlay = _build_view_cube_overlay(
+        _camera_state((0.0, 0.0, 0.0), 4.0, -45.0, 35.26438968),
+        900.0,
+        700.0,
+    )
+    top_face = next(face for face in overlay.faces if face.view_name == "Top")
+    mapped_center = _view_cube_label_transform(top_face).map(QPointF(0.5, 0.5))
+    polygon = QPolygonF(QPointF(point[0], point[1]) for point in top_face.polygon)
+
+    assert polygon.containsPoint(mapped_center, Qt.FillRule.WindingFill)
+
+
+def test_view_cube_label_transform_stays_on_face_across_multiple_orientations():
+    for view_name in (
+        "Top-Front-Right",
+        "Top-Back-Left",
+        "Bottom-Front-Left",
+        "Bottom-Back-Right",
+    ):
+        eye_direction = _named_view_eye_direction(view_name)
+        overlay = _build_view_cube_overlay(
+            _camera_state(
+                (0.0, 0.0, 0.0),
+                4.0,
+                math.degrees(math.atan2(eye_direction[1], eye_direction[0])),
+                math.degrees(math.asin(eye_direction[2])),
+            ),
+            900.0,
+            700.0,
+        )
+
+        for face in overlay.faces:
+            transform = _view_cube_label_transform(face)
+            polygon = QPolygonF(QPointF(point[0], point[1]) for point in face.polygon)
+            for sample in (QPointF(0.35, 0.5), QPointF(0.5, 0.5), QPointF(0.65, 0.5)):
+                assert polygon.containsPoint(transform.map(sample), Qt.FillRule.WindingFill)
+
+
+def test_view_cube_projection_stays_within_overlay_bounds_across_orientations():
+    for view_name in (
+        "Top-Front-Right",
+        "Top-Back-Left",
+        "Bottom-Front-Left",
+        "Bottom-Back-Right",
+        "Top-Front-Left",
+        "Top-Back-Right",
+    ):
+        eye_direction = _named_view_eye_direction(view_name)
+        overlay = _build_view_cube_overlay(
+            _camera_state(
+                (0.0, 0.0, 0.0),
+                4.0,
+                math.degrees(math.atan2(eye_direction[1], eye_direction[0])),
+                math.degrees(math.asin(eye_direction[2])),
+            ),
+            900.0,
+            700.0,
+        )
+        xs = [point[0] for face in overlay.faces for point in face.polygon]
+        ys = [point[1] for face in overlay.faces for point in face.polygon]
+
+        assert xs
+        assert ys
+        assert max(xs) - min(xs) <= 84.0 + 1e-6
+        assert max(ys) - min(ys) <= 84.0 + 1e-6
+
+
 def test_crease_aware_render_geometry_keeps_coplanar_faces_smooth():
     geometry = _build_crease_aware_render_geometry(
         vertices=[
@@ -245,6 +363,18 @@ def test_render_pass_configs_keep_surface_opaque_and_overlays_non_destructive():
     assert _OVERLAY_DEPTH_BIAS > 0.0
 
 
+def test_opengl_viewport_initializes_empty_geometry_buffers(qtbot):
+    if not advanced_propeller_module._HAS_QT_OPENGL:
+        pytest.skip("Qt OpenGL modules are unavailable")
+
+    viewport = advanced_propeller_module._OpenGLPropellerViewportWidget()
+    qtbot.addWidget(viewport)
+
+    assert viewport._mesh_triangle_blob == b""
+    assert viewport._mesh_interactive_triangle_blob == b""
+    assert viewport._mesh_wire_blob == b""
+
+
 def test_build_service_reports_backend_missing(monkeypatch):
     monkeypatch.setattr(
         bridge_module,
@@ -265,3 +395,74 @@ def test_build_service_reports_backend_contract_mismatch(monkeypatch):
     service = PropellerBuildService()
     assert not service.using_rust_backend
     assert "contract mismatch" in (service.backend_error or "")
+
+
+def test_software_viewport_cube_click_snaps_without_entering_drag(window, qtbot):
+    node_id = _drop_propeller_module(window)
+    assert window.orchestrate.scene.activate_node(node_id)
+    qtbot.wait(200)
+
+    workspace = window.workspace_stack.currentWidget()
+    assert isinstance(workspace, AdvancedPropellerWorkspace)
+    _wait_for_result(qtbot, workspace)
+
+    canvas = workspace.viewport._canvas
+    overlay = canvas._view_cube_overlay()
+    top_face = next(face for face in overlay.faces if face.view_name == "Top")
+    centroid = (
+        sum(point[0] for point in top_face.polygon) / len(top_face.polygon),
+        sum(point[1] for point in top_face.polygon) / len(top_face.polygon),
+    )
+    qtbot.mouseClick(
+        canvas,
+        Qt.MouseButton.LeftButton,
+        pos=QPoint(round(centroid[0]), round(centroid[1])),
+    )
+
+    assert canvas._drag_mode is None
+    assert canvas._pitch == pytest.approx(90.0)
+
+
+def test_reset_view_restores_default_iso_after_named_view_snap(window, qtbot):
+    node_id = _drop_propeller_module(window)
+    assert window.orchestrate.scene.activate_node(node_id)
+    qtbot.wait(200)
+
+    workspace = window.workspace_stack.currentWidget()
+    assert isinstance(workspace, AdvancedPropellerWorkspace)
+    _wait_for_result(qtbot, workspace)
+
+    workspace.viewport.snap_to_named_view("Front")
+    workspace.viewport.reset_view()
+    canvas = workspace.viewport._canvas
+
+    assert canvas._yaw == pytest.approx(-45.0)
+    assert canvas._pitch == pytest.approx(35.26438968)
+
+
+def test_viewport_uses_cad_palette_instead_of_app_accent(window, qtbot):
+    node_id = _drop_propeller_module(window)
+    assert window.orchestrate.scene.activate_node(node_id)
+    qtbot.wait(200)
+
+    workspace = window.workspace_stack.currentWidget()
+    assert isinstance(workspace, AdvancedPropellerWorkspace)
+    canvas = workspace.viewport._canvas
+
+    assert canvas._background.name().lower() == _VIEWPORT_BACKGROUND_HEX
+    assert canvas._mesh_fill.name().lower() == _VIEWPORT_SURFACE_HEX
+
+
+def test_display_edge_geometry_is_separate_from_full_wireframe():
+    state = create_default_propeller_feature_state("edge-node", "Propeller")
+    bridge = PropellerBuildBridge()
+    result = bridge.build_model(
+        PropellerBuildRequestDTO(
+            feature_state=state,
+            dirty_stages=list(ACTIVE_PROPELLER_STAGES),
+        )
+    )
+    display_edges = _build_display_edges(result.mesh.vertices, result.mesh.faces)
+    total_wire_edges = len(result.mesh.faces) * 3
+    assert display_edges
+    assert len(display_edges) * 2 < total_wire_edges

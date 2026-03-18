@@ -7,7 +7,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 
 from PyQt6.QtCore import QPoint, QPointF, Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QColor, QMatrix4x4, QPainter, QPainterPath, QPen, QPolygonF, QVector3D, QVector4D
+from PyQt6.QtGui import QColor, QMatrix4x4, QPainter, QPainterPath, QPen, QPolygonF, QTransform, QVector3D, QVector4D
 from PyQt6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -105,6 +105,47 @@ class _RenderPassConfig:
     depth_write_enabled: bool
 
 
+@dataclass(frozen=True)
+class _ViewportCameraState:
+    eye: tuple[float, float, float]
+    eye_direction: tuple[float, float, float]
+    forward: tuple[float, float, float]
+    right: tuple[float, float, float]
+    up: tuple[float, float, float]
+
+
+@dataclass(frozen=True)
+class _DisplayEdge:
+    start: int
+    end: int
+    adjacent_faces: tuple[int, ...]
+
+
+@dataclass(frozen=True)
+class _ViewCubeFaceOverlay:
+    label: str
+    view_name: str
+    polygon: tuple[tuple[float, float], ...]
+    brightness: float
+    depth: float
+    label_quad: tuple[tuple[float, float], ...]
+
+
+@dataclass(frozen=True)
+class _ViewCubeHotspot:
+    kind: str
+    view_name: str
+    polygon: tuple[tuple[float, float], ...] = ()
+    point: tuple[float, float] | None = None
+    segment: tuple[tuple[float, float], tuple[float, float]] | None = None
+
+
+@dataclass(frozen=True)
+class _ViewCubeOverlay:
+    faces: tuple[_ViewCubeFaceOverlay, ...]
+    hotspots: tuple[_ViewCubeHotspot, ...]
+
+
 _CREASE_ANGLE_DEGREES = 45.0
 _SURFACE_PASS_CONFIG = _RenderPassConfig(
     alpha=1.0,
@@ -118,6 +159,88 @@ _OVERLAY_PASS_CONFIG = _RenderPassConfig(
 )
 _SECTION_OVERLAY_ALPHA = 0.88
 _OVERLAY_DEPTH_BIAS = 0.00035
+_DISPLAY_EDGE_DEPTH_BIAS = 0.00018
+_DISPLAY_EDGE_CREASE_ANGLE_DEGREES = 34.0
+_VIEWPORT_BACKGROUND_HEX = "#394454"
+_VIEWPORT_SURFACE_HEX = "#d9d7d4"
+_VIEWPORT_DISPLAY_EDGE_HEX = "#6c737d"
+_VIEWPORT_WIREFRAME_HEX = "#8eb4dc"
+_VIEWPORT_CUBE_FACE_HEX = "#d7d7d8"
+_VIEWPORT_CUBE_EDGE_HEX = "#7e848c"
+_VIEWPORT_CUBE_TEXT_HEX = "#5f6670"
+_VIEWPORT_TRIAD_X_HEX = "#d94343"
+_VIEWPORT_TRIAD_Y_HEX = "#33b146"
+_VIEWPORT_TRIAD_Z_HEX = "#3a64ff"
+_VIEWPORT_LIGHT_DIRECTION = (0.35, -0.28, 0.89)
+_VIEWPORT_LIGHT_AMBIENT = 0.86
+_VIEWPORT_LIGHT_DIFFUSE = 0.12
+_TRIAD_SIZE = 46.0
+_TRIAD_PADDING = 18.0
+_TRIAD_ARROW_SIZE = 6.0
+_VIEW_CUBE_SIZE = 84.0
+_VIEW_CUBE_PADDING = 18.0
+_VIEW_CUBE_CORNER_RADIUS = 9.0
+_VIEW_CUBE_EDGE_RADIUS = 7.0
+_VIEW_CUBE_FOV_DEGREES = 28.0
+_VIEW_CUBE_CAMERA_DISTANCE = 6.2
+_VIEW_CUBE_FIT_FRACTION = 0.84
+_VIEW_CUBE_LABEL_MARGIN = 0.18
+_VIEW_CUBE_LABEL_HEIGHT = 0.26
+_VIEW_CUBE_LABEL_PIXEL_SIZE = 96
+_VIEW_CUBE_FACE_ORDER = ("Top", "Bottom", "Front", "Back", "Right", "Left")
+_VIEW_NAME_ORDER = ("Top", "Bottom", "Front", "Back", "Right", "Left")
+_DEFAULT_ISO_COMPONENT = 1.0 / math.sqrt(3.0)
+_DEFAULT_ISO_DIRECTION = (_DEFAULT_ISO_COMPONENT, -_DEFAULT_ISO_COMPONENT, _DEFAULT_ISO_COMPONENT)
+_DEFAULT_ISO_YAW = math.degrees(math.atan2(_DEFAULT_ISO_DIRECTION[1], _DEFAULT_ISO_DIRECTION[0]))
+_DEFAULT_ISO_PITCH = math.degrees(math.asin(_DEFAULT_ISO_DIRECTION[2]))
+_VIEW_AXIS_MAP: dict[str, tuple[float, float, float]] = {
+    "Top": (0.0, 0.0, 1.0),
+    "Bottom": (0.0, 0.0, -1.0),
+    "Front": (0.0, -1.0, 0.0),
+    "Back": (0.0, 1.0, 0.0),
+    "Right": (1.0, 0.0, 0.0),
+    "Left": (-1.0, 0.0, 0.0),
+}
+_VIEW_CUBE_VERTICES: tuple[tuple[float, float, float], ...] = (
+    (-1.0, -1.0, -1.0),
+    (1.0, -1.0, -1.0),
+    (1.0, 1.0, -1.0),
+    (-1.0, 1.0, -1.0),
+    (-1.0, -1.0, 1.0),
+    (1.0, -1.0, 1.0),
+    (1.0, 1.0, 1.0),
+    (-1.0, 1.0, 1.0),
+)
+_VIEW_CUBE_FACES: tuple[tuple[str, tuple[float, float, float], tuple[int, int, int, int]], ...] = (
+    ("Top", (0.0, 0.0, 1.0), (4, 5, 6, 7)),
+    ("Bottom", (0.0, 0.0, -1.0), (0, 1, 2, 3)),
+    ("Front", (0.0, -1.0, 0.0), (0, 1, 5, 4)),
+    ("Back", (0.0, 1.0, 0.0), (3, 2, 6, 7)),
+    ("Right", (1.0, 0.0, 0.0), (1, 2, 6, 5)),
+    ("Left", (-1.0, 0.0, 0.0), (0, 3, 7, 4)),
+)
+_VIEW_CUBE_LABEL_QUAD_INDICES: dict[str, tuple[int, int, int, int]] = {
+    "Top": (7, 6, 5, 4),
+    "Bottom": (0, 1, 2, 3),
+    "Front": (4, 5, 1, 0),
+    "Back": (6, 7, 3, 2),
+    "Right": (5, 6, 2, 1),
+    "Left": (7, 4, 0, 3),
+}
+_VIEW_CUBE_EDGES: tuple[tuple[int, int], ...] = (
+    (0, 1),
+    (1, 2),
+    (2, 3),
+    (3, 0),
+    (4, 5),
+    (5, 6),
+    (6, 7),
+    (7, 4),
+    (0, 4),
+    (1, 5),
+    (2, 6),
+    (3, 7),
+)
 
 
 def _series_color(index: int) -> QColor:
@@ -163,6 +286,443 @@ def _sub(
     right: tuple[float, float, float],
 ) -> tuple[float, float, float]:
     return (left[0] - right[0], left[1] - right[1], left[2] - right[2])
+
+
+def _add(
+    left: tuple[float, float, float],
+    right: tuple[float, float, float],
+) -> tuple[float, float, float]:
+    return (left[0] + right[0], left[1] + right[1], left[2] + right[2])
+
+
+def _scale(
+    vector: tuple[float, float, float],
+    factor: float,
+) -> tuple[float, float, float]:
+    return (vector[0] * factor, vector[1] * factor, vector[2] * factor)
+
+
+def _camera_state(
+    center: tuple[float, float, float],
+    distance: float,
+    yaw_deg: float,
+    pitch_deg: float,
+) -> _ViewportCameraState:
+    yaw_rad = math.radians(yaw_deg)
+    pitch_rad = math.radians(pitch_deg)
+    eye_direction = (
+        math.cos(pitch_rad) * math.cos(yaw_rad),
+        math.cos(pitch_rad) * math.sin(yaw_rad),
+        math.sin(pitch_rad),
+    )
+    eye = _add(center, _scale(eye_direction, distance))
+    forward = _normalize(_scale(eye_direction, -1.0))
+    world_up = (0.0, 0.0, 1.0)
+    if abs(_dot(forward, world_up)) > 0.98:
+        world_up = (0.0, 1.0, 0.0)
+    right = _normalize(_cross(forward, world_up))
+    up = _normalize(_cross(right, forward))
+    return _ViewportCameraState(
+        eye=eye,
+        eye_direction=_normalize(eye_direction),
+        forward=forward,
+        right=right,
+        up=up,
+    )
+
+
+def _named_view_eye_direction(view_name: str) -> tuple[float, float, float]:
+    parts = [part.strip().title() for part in view_name.split("-") if part.strip()]
+    if not parts:
+        raise ValueError("Named view must include at least one axis label.")
+
+    seen_axes: set[str] = set()
+    direction = (0.0, 0.0, 0.0)
+    for part in parts:
+        if part not in _VIEW_AXIS_MAP:
+            raise ValueError(f"Unknown named view component: {part}")
+        axis_key = "z" if part in {"Top", "Bottom"} else "y" if part in {"Front", "Back"} else "x"
+        if axis_key in seen_axes:
+            raise ValueError(f"Named view contains conflicting axes: {view_name}")
+        seen_axes.add(axis_key)
+        direction = _add(direction, _VIEW_AXIS_MAP[part])
+    return _normalize(direction)
+
+
+def _canonical_view_name(parts: list[str]) -> str:
+    ordered = [part for part in _VIEW_NAME_ORDER if part in parts]
+    return "-".join(ordered)
+
+
+def _view_name_from_vector(vector: tuple[float, float, float]) -> str:
+    parts: list[str] = []
+    if vector[2] > 0.0:
+        parts.append("Top")
+    elif vector[2] < 0.0:
+        parts.append("Bottom")
+    if vector[1] < 0.0:
+        parts.append("Front")
+    elif vector[1] > 0.0:
+        parts.append("Back")
+    if vector[0] > 0.0:
+        parts.append("Right")
+    elif vector[0] < 0.0:
+        parts.append("Left")
+    return _canonical_view_name(parts)
+
+
+def _view_name_from_points(points: tuple[tuple[float, float, float], ...]) -> str:
+    constant = [0.0, 0.0, 0.0]
+    for axis in range(3):
+        values = {point[axis] for point in points}
+        if len(values) == 1:
+            constant[axis] = next(iter(values))
+    return _view_name_from_vector((constant[0], constant[1], constant[2]))
+
+
+def _color_with_brightness(color: QColor, brightness: float, alpha: float = 1.0) -> QColor:
+    return QColor.fromRgbF(
+        min(1.0, color.redF() * brightness),
+        min(1.0, color.greenF() * brightness),
+        min(1.0, color.blueF() * brightness),
+        alpha,
+    )
+
+
+def _surface_brightness(normal: tuple[float, float, float]) -> float:
+    diffuse = max(0.0, _dot(_normalize(normal), _normalize(_VIEWPORT_LIGHT_DIRECTION)))
+    return min(1.0, _VIEWPORT_LIGHT_AMBIENT + diffuse * _VIEWPORT_LIGHT_DIFFUSE)
+
+
+def _polygon_from_points(points: tuple[tuple[float, float], ...]) -> QPolygonF:
+    return QPolygonF([QPointF(point[0], point[1]) for point in points])
+
+
+def _distance_between_points(
+    left: tuple[float, float],
+    right: tuple[float, float],
+) -> float:
+    return math.hypot(left[0] - right[0], left[1] - right[1])
+
+
+def _distance_to_segment(
+    point: tuple[float, float],
+    start: tuple[float, float],
+    end: tuple[float, float],
+) -> float:
+    segment = (end[0] - start[0], end[1] - start[1])
+    length_sq = segment[0] * segment[0] + segment[1] * segment[1]
+    if length_sq <= 1e-9:
+        return _distance_between_points(point, start)
+    factor = ((point[0] - start[0]) * segment[0] + (point[1] - start[1]) * segment[1]) / length_sq
+    factor = max(0.0, min(1.0, factor))
+    projection = (start[0] + segment[0] * factor, start[1] + segment[1] * factor)
+    return _distance_between_points(point, projection)
+
+
+def _build_display_edges(
+    vertices: list[tuple[float, float, float]],
+    faces: list[tuple[int, int, int]],
+    crease_angle_deg: float = _DISPLAY_EDGE_CREASE_ANGLE_DEGREES,
+) -> list[_DisplayEdge]:
+    if not vertices or not faces:
+        return []
+
+    face_normals = [_face_normal(vertices, face) for face in faces]
+    edge_faces: defaultdict[tuple[int, int], list[int]] = defaultdict(list)
+    for face_index, face in enumerate(faces):
+        for start, end in ((face[0], face[1]), (face[1], face[2]), (face[2], face[0])):
+            key = (start, end) if start < end else (end, start)
+            edge_faces[key].append(face_index)
+
+    crease_cosine = math.cos(math.radians(crease_angle_deg))
+    display_edges: list[_DisplayEdge] = []
+    for (start, end), adjacent_faces in edge_faces.items():
+        show_edge = len(adjacent_faces) == 1
+        if not show_edge and len(adjacent_faces) > 1:
+            similarities = [
+                _dot(face_normals[left], face_normals[right])
+                for left_index, left in enumerate(adjacent_faces)
+                for right in adjacent_faces[left_index + 1 :]
+            ]
+            show_edge = any(similarity < crease_cosine for similarity in similarities)
+        if show_edge:
+            display_edges.append(
+                _DisplayEdge(start=start, end=end, adjacent_faces=tuple(adjacent_faces))
+            )
+    return display_edges
+
+
+def _build_view_cube_overlay(
+    camera: _ViewportCameraState,
+    widget_width: float,
+    widget_height: float,
+    size: float = _VIEW_CUBE_SIZE,
+    padding: float = _VIEW_CUBE_PADDING,
+) -> _ViewCubeOverlay:
+    center = (widget_width - padding - size * 0.5, padding + size * 0.5)
+    projected_vertices = _project_view_cube_vertices(camera, center, size)
+    visible_faces: list[_ViewCubeFaceOverlay] = []
+    visible_vertices: set[int] = set()
+    visible_edges: set[tuple[int, int]] = set()
+
+    for label, normal, indices in _VIEW_CUBE_FACES:
+        if _dot(normal, camera.eye_direction) <= 0.0:
+            continue
+        polygon = tuple(
+            (projected_vertices[index][0], projected_vertices[index][1]) for index in indices
+        )
+        label_quad_indices = _VIEW_CUBE_LABEL_QUAD_INDICES[label]
+        label_quad = tuple(
+            (projected_vertices[index][0], projected_vertices[index][1])
+            for index in label_quad_indices
+        )
+        brightness = _surface_brightness(normal)
+        depth = sum(projected_vertices[index][2] for index in indices) / len(indices)
+        visible_faces.append(
+            _ViewCubeFaceOverlay(
+                label=label,
+                view_name=label,
+                polygon=polygon,
+                brightness=brightness,
+                depth=depth,
+                label_quad=label_quad,
+            )
+        )
+        visible_vertices.update(indices)
+        visible_edges.update(
+            {
+                tuple(sorted((indices[0], indices[1]))),
+                tuple(sorted((indices[1], indices[2]))),
+                tuple(sorted((indices[2], indices[3]))),
+                tuple(sorted((indices[3], indices[0]))),
+            }
+        )
+
+    visible_faces.sort(key=lambda face: face.depth)
+    hotspots: list[_ViewCubeHotspot] = []
+
+    for vertex_index in sorted(visible_vertices):
+        point = _VIEW_CUBE_VERTICES[vertex_index]
+        hotspots.append(
+            _ViewCubeHotspot(
+                kind="corner",
+                view_name=_view_name_from_points((point,)),
+                point=(
+                    projected_vertices[vertex_index][0],
+                    projected_vertices[vertex_index][1],
+                ),
+            )
+        )
+
+    for start, end in sorted(visible_edges):
+        edge_points = (_VIEW_CUBE_VERTICES[start], _VIEW_CUBE_VERTICES[end])
+        hotspots.append(
+            _ViewCubeHotspot(
+                kind="edge",
+                view_name=_view_name_from_points(edge_points),
+                segment=(
+                    (projected_vertices[start][0], projected_vertices[start][1]),
+                    (projected_vertices[end][0], projected_vertices[end][1]),
+                ),
+            )
+        )
+
+    for face in visible_faces:
+        hotspots.append(
+            _ViewCubeHotspot(
+                kind="face",
+                view_name=face.view_name,
+                polygon=face.polygon,
+            )
+        )
+
+    return _ViewCubeOverlay(faces=tuple(visible_faces), hotspots=tuple(hotspots))
+
+
+def _project_view_cube_vertices(
+    camera: _ViewportCameraState,
+    center: tuple[float, float],
+    size: float,
+) -> list[tuple[float, float, float]]:
+    projection_scale = 1.0 / math.tan(math.radians(_VIEW_CUBE_FOV_DEGREES) * 0.5)
+    raw_vertices: list[tuple[float, float, float]] = []
+    min_x = float("inf")
+    max_x = float("-inf")
+    min_y = float("inf")
+    max_y = float("-inf")
+
+    for vertex in _VIEW_CUBE_VERTICES:
+        cam_x = _dot(vertex, camera.right)
+        cam_y = _dot(vertex, camera.up)
+        cam_z = max(0.1, _VIEW_CUBE_CAMERA_DISTANCE - _dot(vertex, camera.eye_direction))
+        projected_x = (cam_x * projection_scale) / cam_z
+        projected_y = (cam_y * projection_scale) / cam_z
+        depth = _dot(vertex, camera.eye_direction)
+        raw_vertices.append((projected_x, projected_y, depth))
+        min_x = min(min_x, projected_x)
+        max_x = max(max_x, projected_x)
+        min_y = min(min_y, projected_y)
+        max_y = max(max_y, projected_y)
+
+    span_x = max_x - min_x
+    span_y = max_y - min_y
+    normalization_span = max(math.hypot(span_x, span_y), 1e-6)
+    fit_size = size * _VIEW_CUBE_FIT_FRACTION
+    pixel_scale = fit_size / normalization_span
+    offset_x = (min_x + max_x) * 0.5
+    offset_y = (min_y + max_y) * 0.5
+    return [
+        (
+            center[0] + (projected_x - offset_x) * pixel_scale,
+            center[1] - (projected_y - offset_y) * pixel_scale,
+            depth,
+        )
+        for projected_x, projected_y, depth in raw_vertices
+    ]
+
+
+def _hit_test_view_cube_overlay(
+    overlay: _ViewCubeOverlay,
+    point: tuple[float, float],
+) -> _ViewCubeHotspot | None:
+    for hotspot in overlay.hotspots:
+        if hotspot.kind == "corner" and hotspot.point is not None:
+            if _distance_between_points(point, hotspot.point) <= _VIEW_CUBE_CORNER_RADIUS:
+                return hotspot
+    for hotspot in overlay.hotspots:
+        if hotspot.kind == "edge" and hotspot.segment is not None:
+            if _distance_to_segment(point, hotspot.segment[0], hotspot.segment[1]) <= _VIEW_CUBE_EDGE_RADIUS:
+                return hotspot
+    for hotspot in overlay.hotspots:
+        if hotspot.kind == "face" and hotspot.polygon:
+            if _polygon_from_points(hotspot.polygon).containsPoint(
+                QPointF(point[0], point[1]),
+                Qt.FillRule.WindingFill,
+            ):
+                return hotspot
+    return None
+
+
+def _draw_axis_triad_overlay(
+    painter: QPainter,
+    camera: _ViewportCameraState,
+    widget_height: float,
+) -> None:
+    origin = (_TRIAD_PADDING + _TRIAD_SIZE * 0.35, widget_height - _TRIAD_PADDING - _TRIAD_SIZE * 0.35)
+    axis_specs = (
+        ("X", (1.0, 0.0, 0.0), QColor(_VIEWPORT_TRIAD_X_HEX)),
+        ("Y", (0.0, 1.0, 0.0), QColor(_VIEWPORT_TRIAD_Y_HEX)),
+        ("Z", (0.0, 0.0, 1.0), QColor(_VIEWPORT_TRIAD_Z_HEX)),
+    )
+    sorted_axes = sorted(axis_specs, key=lambda item: _dot(item[1], camera.eye_direction))
+
+    for label, axis, color in sorted_axes:
+        end = (
+            origin[0] + _dot(axis, camera.right) * _TRIAD_SIZE,
+            origin[1] - _dot(axis, camera.up) * _TRIAD_SIZE,
+        )
+        painter.setPen(QPen(color, 1.8))
+        painter.drawLine(QPointF(origin[0], origin[1]), QPointF(end[0], end[1]))
+
+        direction_2d = (end[0] - origin[0], end[1] - origin[1])
+        direction_length = math.hypot(direction_2d[0], direction_2d[1])
+        if direction_length > 1e-6:
+            direction_2d = (direction_2d[0] / direction_length, direction_2d[1] / direction_length)
+            normal = (-direction_2d[1], direction_2d[0])
+            tip = end
+            left = (
+                tip[0] - direction_2d[0] * _TRIAD_ARROW_SIZE + normal[0] * (_TRIAD_ARROW_SIZE * 0.55),
+                tip[1] - direction_2d[1] * _TRIAD_ARROW_SIZE + normal[1] * (_TRIAD_ARROW_SIZE * 0.55),
+            )
+            right = (
+                tip[0] - direction_2d[0] * _TRIAD_ARROW_SIZE - normal[0] * (_TRIAD_ARROW_SIZE * 0.55),
+                tip[1] - direction_2d[1] * _TRIAD_ARROW_SIZE - normal[1] * (_TRIAD_ARROW_SIZE * 0.55),
+            )
+            painter.setBrush(color)
+            painter.drawPolygon(_polygon_from_points((tip, left, right)))
+            painter.drawText(QPointF(tip[0] + normal[0] * 6.0, tip[1] + normal[1] * 6.0), label)
+
+    painter.setBrush(QColor(_VIEWPORT_CUBE_EDGE_HEX))
+    painter.setPen(Qt.PenStyle.NoPen)
+    painter.drawEllipse(QPointF(origin[0], origin[1]), 3.2, 3.2)
+
+
+def _draw_view_cube_overlay(
+    painter: QPainter,
+    overlay: _ViewCubeOverlay,
+) -> None:
+    painter.setPen(QPen(QColor(_VIEWPORT_CUBE_EDGE_HEX), 1.0))
+    for face in overlay.faces:
+        fill = _color_with_brightness(QColor(_VIEWPORT_CUBE_FACE_HEX), face.brightness)
+        painter.setBrush(fill)
+        polygon = _polygon_from_points(face.polygon)
+        painter.drawPolygon(polygon)
+        painter.setPen(QPen(QColor(_VIEWPORT_CUBE_EDGE_HEX), 1.0))
+        _draw_view_cube_face_label(painter, face)
+
+
+def _view_cube_label_transform(face: _ViewCubeFaceOverlay) -> QTransform:
+    source = QPolygonF(
+        [
+            QPointF(0.0, 0.0),
+            QPointF(1.0, 0.0),
+            QPointF(1.0, 1.0),
+            QPointF(0.0, 1.0),
+        ]
+    )
+    destination = _polygon_from_points(face.label_quad)
+    transform = QTransform()
+    if QTransform.quadToQuad(source, destination, transform):
+        return transform
+
+    first = face.label_quad[0]
+    second = face.label_quad[1]
+    fourth = face.label_quad[3]
+    return QTransform(
+        second[0] - first[0],
+        second[1] - first[1],
+        fourth[0] - first[0],
+        fourth[1] - first[1],
+        first[0],
+        first[1],
+    )
+
+
+def _view_cube_label_path(face: _ViewCubeFaceOverlay, painter: QPainter) -> QPainterPath:
+    font = painter.font()
+    font.setPixelSize(_VIEW_CUBE_LABEL_PIXEL_SIZE)
+    base_path = QPainterPath()
+    base_path.addText(QPointF(0.0, 0.0), font, face.label)
+    bounds = base_path.boundingRect()
+    available_width = max(0.1, 1.0 - _VIEW_CUBE_LABEL_MARGIN * 2.0)
+    available_height = _VIEW_CUBE_LABEL_HEIGHT
+    scale = min(
+        available_width / max(bounds.width(), 1e-6),
+        available_height / max(bounds.height(), 1e-6),
+    )
+    centered = QTransform()
+    centered.translate(0.5, 0.54)
+    centered.scale(scale, scale)
+    centered.translate(-bounds.center().x(), -bounds.center().y())
+    return centered.map(base_path)
+
+
+def _draw_view_cube_face_label(
+    painter: QPainter,
+    face: _ViewCubeFaceOverlay,
+) -> None:
+    label_path = _view_cube_label_path(face, painter)
+    world_path = _view_cube_label_transform(face).map(label_path)
+    clip_path = QPainterPath()
+    clip_path.addPolygon(_polygon_from_points(face.polygon))
+
+    painter.save()
+    painter.setClipPath(clip_path)
+    painter.setPen(Qt.PenStyle.NoPen)
+    painter.setBrush(_color_with_brightness(QColor(_VIEWPORT_CUBE_TEXT_HEX), 0.98))
+    painter.drawPath(world_path)
+    painter.restore()
 
 
 def _face_normal(
@@ -590,23 +1150,25 @@ class _SoftwarePropellerViewportWidget(QWidget):
         self.setMinimumWidth(320)
         self.setMinimumHeight(320)
         self._preview_result: PropellerPreviewResult | None = None
-        self._background = QColor("#161f2d")
+        self._background = QColor(_VIEWPORT_BACKGROUND_HEX)
         self._border = QColor("#2a3a50")
-        self._mesh_fill = QColor("#4d80c4")
-        self._mesh_wire = QColor("#dbe8fa")
+        self._mesh_fill = QColor(_VIEWPORT_SURFACE_HEX)
+        self._display_edge = QColor(_VIEWPORT_DISPLAY_EDGE_HEX)
+        self._mesh_wire = QColor(_VIEWPORT_WIREFRAME_HEX)
         self._section_color = QColor("#efad4d")
         self._text = QColor("#e8eef7")
         self._muted = QColor("#9fb0c8")
         self._show_mesh = True
         self._show_wireframe = True
-        self._yaw = -34.0
-        self._pitch = 18.0
+        self._yaw = _DEFAULT_ISO_YAW
+        self._pitch = _DEFAULT_ISO_PITCH
         self._distance = 4.0
         self._center = (0.0, 0.0, 0.0)
         self._last_pos = QPoint()
         self._drag_mode: str | None = None
         self._bounds_extent = 2.0
         self._vertex_normals: list[tuple[float, float, float]] = []
+        self._display_edges: list[_DisplayEdge] = []
         self._interactive_preview = False
         self._static_face_budget = 24000
         self._interactive_face_budget = 6000
@@ -617,6 +1179,7 @@ class _SoftwarePropellerViewportWidget(QWidget):
 
     def set_preview_result(self, result: PropellerPreviewResult | None) -> None:
         self._preview_result = result
+        self._rebuild_display_edge_cache()
         self._rebuild_surface_cache()
         self._fit_to_mesh()
         self._settle_interaction()
@@ -633,17 +1196,13 @@ class _SoftwarePropellerViewportWidget(QWidget):
         self.update()
 
     def reset_view(self) -> None:
-        self._yaw = -34.0
-        self._pitch = 18.0
+        self.snap_to_named_view("Top-Front-Right")
         self._fit_to_mesh()
         self._settle_interaction()
         self.update()
 
     def apply_theme(self, colors: dict[str, str]) -> None:
-        self._background = QColor(colors["workspace_bg"])
         self._border = QColor(colors["border"])
-        self._mesh_fill = QColor(colors["accent"])
-        self._mesh_wire = QColor(colors["text_primary"])
         self._section_color = QColor(colors["port_output"])
         self._text = QColor(colors["text_primary"])
         self._muted = QColor(colors["text_muted"])
@@ -651,93 +1210,132 @@ class _SoftwarePropellerViewportWidget(QWidget):
 
     def paintEvent(self, event) -> None:  # type: ignore[override]
         painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing, not self._interactive_preview)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         painter.fillRect(self.rect(), self._background)
         painter.setPen(QPen(self._border, 1))
         painter.drawRect(self.rect().adjusted(0, 0, -1, -1))
-        if self._preview_result is None or not self._preview_result.mesh.vertices or not self._preview_result.mesh.faces:
+        camera = self._camera_state()
+        face_step = 1
+        if self._preview_result is not None and self._preview_result.mesh.vertices and self._preview_result.mesh.faces:
+            vertices = self._preview_result.mesh.vertices
+            faces = self._preview_result.mesh.faces
+            projected_vertices = [
+                self._project_point(point, camera.eye, camera.forward, camera.right, camera.up)
+                for point in vertices
+            ]
+            target_faces = self._interactive_face_budget if self._interactive_preview else self._static_face_budget
+            face_step = max(1, math.ceil(len(faces) / max(1, target_faces)))
+            show_wireframe = self._show_wireframe and not self._interactive_preview
+            face_polygons: list[tuple[float, QPolygonF, QColor]] = []
+            for face_index in range(0, len(faces), face_step):
+                face = faces[face_index]
+                projected = (
+                    projected_vertices[face[0]],
+                    projected_vertices[face[1]],
+                    projected_vertices[face[2]],
+                )
+                if any(point is None for point in projected):
+                    continue
+                points = [point for point in projected if point is not None]
+                polygon = QPolygonF([QPointF(point.x, point.y) for point in points])
+                if self._vertex_normals:
+                    n0 = self._vertex_normals[face[0]]
+                    n1 = self._vertex_normals[face[1]]
+                    n2 = self._vertex_normals[face[2]]
+                    normal = _normalize(
+                        (
+                            n0[0] + n1[0] + n2[0],
+                            n0[1] + n1[1] + n2[1],
+                            n0[2] + n1[2] + n2[2],
+                        )
+                    )
+                else:
+                    world = [vertices[face[0]], vertices[face[1]], vertices[face[2]]]
+                    normal = _normalize(_cross(_sub(world[1], world[0]), _sub(world[2], world[0])))
+                fill = _color_with_brightness(
+                    self._mesh_fill,
+                    _surface_brightness(normal),
+                    _SURFACE_PASS_CONFIG.alpha,
+                )
+                face_polygons.append((sum(point.depth for point in points) / len(points), polygon, fill))
+
+            face_polygons.sort(key=lambda item: item[0], reverse=True)
+            for _depth, polygon, fill in face_polygons:
+                painter.setBrush(fill if self._show_mesh else Qt.BrushStyle.NoBrush)
+                painter.setPen(QPen(fill if self._show_mesh else self._mesh_wire, 0 if self._show_mesh else 1))
+                painter.drawPolygon(polygon)
+
+            if self._show_mesh:
+                painter.setBrush(Qt.BrushStyle.NoBrush)
+                painter.setPen(QPen(self._display_edge, 1.1))
+                for start, end in self._visible_display_edges(camera):
+                    start_point = projected_vertices[start]
+                    end_point = projected_vertices[end]
+                    if start_point is None or end_point is None:
+                        continue
+                    painter.drawLine(
+                        QPointF(start_point.x, start_point.y),
+                        QPointF(end_point.x, end_point.y),
+                    )
+
+            if show_wireframe:
+                painter.setBrush(Qt.BrushStyle.NoBrush)
+                painter.setPen(QPen(self._mesh_wire, 0.9))
+                for a, b, c in faces:
+                    for start, end in ((a, b), (b, c), (c, a)):
+                        start_point = projected_vertices[start]
+                        end_point = projected_vertices[end]
+                        if start_point is None or end_point is None:
+                            continue
+                        painter.drawLine(
+                            QPointF(start_point.x, start_point.y),
+                            QPointF(end_point.x, end_point.y),
+                        )
+
+            if self._preview_result.mesh.section_polylines and not self._interactive_preview:
+                painter.setPen(QPen(self._section_color, 1.2, Qt.PenStyle.DashLine))
+                for polyline in self._preview_result.mesh.section_polylines:
+                    path = QPainterPath()
+                    started = False
+                    for point in polyline:
+                        projected = self._project_point(
+                            point,
+                            camera.eye,
+                            camera.forward,
+                            camera.right,
+                            camera.up,
+                        )
+                        if projected is None:
+                            continue
+                        if not started:
+                            path.moveTo(projected.x, projected.y)
+                            started = True
+                        else:
+                            path.lineTo(projected.x, projected.y)
+                    if started:
+                        painter.drawPath(path)
+        else:
             painter.setPen(self._muted)
             painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "3D preview waiting for geometry.")
-            return
 
-        projection = self._build_projection()
-        eye, forward, right, up = projection
-        vertices = self._preview_result.mesh.vertices
-        faces = self._preview_result.mesh.faces
-        projected_vertices = [self._project_point(point, eye, forward, right, up) for point in vertices]
-        target_faces = self._interactive_face_budget if self._interactive_preview else self._static_face_budget
-        face_step = max(1, math.ceil(len(faces) / max(1, target_faces)))
-        show_wireframe = self._show_wireframe and not self._interactive_preview
-        face_polygons: list[tuple[float, QPolygonF, QColor]] = []
-        light_direction = _normalize((0.35, -0.28, 0.89))
-        for face_index in range(0, len(faces), face_step):
-            face = faces[face_index]
-            projected = (
-                projected_vertices[face[0]],
-                projected_vertices[face[1]],
-                projected_vertices[face[2]],
-            )
-            if any(point is None for point in projected):
-                continue
-            points = [point for point in projected if point is not None]
-            polygon = QPolygonF([QPointF(point.x, point.y) for point in points])
-            if self._vertex_normals:
-                n0 = self._vertex_normals[face[0]]
-                n1 = self._vertex_normals[face[1]]
-                n2 = self._vertex_normals[face[2]]
-                normal = _normalize(
-                    (
-                        n0[0] + n1[0] + n2[0],
-                        n0[1] + n1[1] + n2[1],
-                        n0[2] + n1[2] + n2[2],
-                    )
-                )
-            else:
-                world = [vertices[face[0]], vertices[face[1]], vertices[face[2]]]
-                normal = _normalize(_cross(_sub(world[1], world[0]), _sub(world[2], world[0])))
-            brightness = 0.34 + max(0.0, _dot(normal, light_direction)) * 0.66
-            fill = QColor(self._mesh_fill)
-            fill.setAlphaF(_SURFACE_PASS_CONFIG.alpha)
-            fill = fill.lighter(int(100 * brightness + 18))
-            face_polygons.append((sum(point.depth for point in points) / len(points), polygon, fill))
-
-        face_polygons.sort(key=lambda item: item[0], reverse=True)
-        for _depth, polygon, fill in face_polygons:
-            painter.setBrush(fill if self._show_mesh else Qt.BrushStyle.NoBrush)
-            painter.setPen(QPen(self._mesh_wire if show_wireframe else fill, 1 if show_wireframe else 0))
-            painter.drawPolygon(polygon)
-
-        if self._preview_result.mesh.section_polylines and not self._interactive_preview:
-            painter.setPen(QPen(self._section_color, 1.2, Qt.PenStyle.DashLine))
-            for polyline in self._preview_result.mesh.section_polylines:
-                path = QPainterPath()
-                started = False
-                for point in polyline:
-                    projected = self._project_point(point, eye, forward, right, up)
-                    if projected is None:
-                        continue
-                    if not started:
-                        path.moveTo(projected.x, projected.y)
-                        started = True
-                    else:
-                        path.lineTo(projected.x, projected.y)
-                if started:
-                    painter.drawPath(path)
-
-        painter.setPen(self._text)
-        painter.drawText(16, 22, "Blade Preview")
-        painter.setPen(self._muted)
-        painter.drawText(16, 40, "Left drag: orbit | Right drag: pan | Wheel: zoom")
-        if face_step > 1:
-            painter.drawText(
-                16,
-                58,
-                f"Adaptive preview: {len(face_polygons):,} of {len(faces):,} faces",
-            )
+        self._draw_overlay_chrome(
+            painter,
+            camera,
+            adaptive_text=(
+                None
+                if self._preview_result is None or face_step <= 1
+                else f"Adaptive preview: {math.ceil(len(self._preview_result.mesh.faces) / face_step):,} of {len(self._preview_result.mesh.faces):,} faces"
+            ),
+        )
 
     def mousePressEvent(self, event) -> None:  # type: ignore[override]
         self._last_pos = event.position().toPoint()
         if event.button() == Qt.MouseButton.LeftButton:
+            target = self._hit_test_view_cube(event.position().toPoint())
+            if target is not None:
+                self.snap_to_named_view(target.view_name)
+                event.accept()
+                return
             self._drag_mode = "orbit"
         elif event.button() == Qt.MouseButton.RightButton:
             self._drag_mode = "pan"
@@ -781,6 +1379,14 @@ class _SoftwarePropellerViewportWidget(QWidget):
         self.update()
         super().wheelEvent(event)
 
+    def snap_to_named_view(self, view_name: str) -> None:
+        eye_direction = _named_view_eye_direction(view_name)
+        self._yaw = math.degrees(math.atan2(eye_direction[1], eye_direction[0]))
+        self._pitch = math.degrees(math.asin(max(-1.0, min(1.0, eye_direction[2]))))
+        self._drag_mode = None
+        self._settle_interaction()
+        self.update()
+
     def _begin_interaction(self) -> None:
         self._interactive_preview = True
         self._interaction_timer.start()
@@ -810,6 +1416,32 @@ class _SoftwarePropellerViewportWidget(QWidget):
         self._vertex_normals = [
             _normalize((normal[0], normal[1], normal[2])) for normal in accumulated
         ]
+
+    def _rebuild_display_edge_cache(self) -> None:
+        self._display_edges = []
+        if self._preview_result is None:
+            return
+        self._display_edges = _build_display_edges(
+            self._preview_result.mesh.vertices,
+            self._preview_result.mesh.faces,
+        )
+
+    def _visible_display_edges(
+        self,
+        camera: _ViewportCameraState,
+    ) -> list[tuple[int, int]]:
+        if self._preview_result is None:
+            return []
+        faces = self._preview_result.mesh.faces
+        face_visibility = [
+            _dot(_face_normal(self._preview_result.mesh.vertices, face), camera.eye_direction) > 0.0
+            for face in faces
+        ]
+        visible_edges: list[tuple[int, int]] = []
+        for edge in self._display_edges:
+            if any(face_visibility[face_index] for face_index in edge.adjacent_faces if face_index < len(face_visibility)):
+                visible_edges.append((edge.start, edge.end))
+        return visible_edges
 
     def _fit_to_mesh(self) -> None:
         if self._preview_result is None or not self._preview_result.mesh.vertices:
@@ -843,27 +1475,33 @@ class _SoftwarePropellerViewportWidget(QWidget):
         )
         self._distance = self._bounds_extent * 2.2
 
+    def _camera_state(self) -> _ViewportCameraState:
+        return _camera_state(self._center, self._distance, self._yaw, self._pitch)
+
+    def _view_cube_overlay(self) -> _ViewCubeOverlay:
+        return _build_view_cube_overlay(self._camera_state(), float(self.width()), float(self.height()))
+
+    def _hit_test_view_cube(self, point: QPoint) -> _ViewCubeHotspot | None:
+        return _hit_test_view_cube_overlay(self._view_cube_overlay(), (float(point.x()), float(point.y())))
+
+    def _draw_overlay_chrome(
+        self,
+        painter: QPainter,
+        camera: _ViewportCameraState,
+        adaptive_text: str | None = None,
+    ) -> None:
+        painter.setPen(self._text)
+        painter.drawText(16, 22, "Blade Preview")
+        painter.setPen(self._muted)
+        painter.drawText(16, 40, "Left drag: orbit | Right drag: pan | Wheel: zoom | Cube: snap views")
+        if adaptive_text:
+            painter.drawText(16, 58, adaptive_text)
+        _draw_axis_triad_overlay(painter, camera, float(self.height()))
+        _draw_view_cube_overlay(painter, self._view_cube_overlay())
+
     def _build_projection(self):
-        yaw_rad = math.radians(self._yaw)
-        pitch_rad = math.radians(self._pitch)
-        eye = (
-            self._center[0] + self._distance * math.cos(pitch_rad) * math.cos(yaw_rad),
-            self._center[1] + self._distance * math.cos(pitch_rad) * math.sin(yaw_rad),
-            self._center[2] + self._distance * math.sin(pitch_rad),
-        )
-        forward = _normalize(
-            (
-                self._center[0] - eye[0],
-                self._center[1] - eye[1],
-                self._center[2] - eye[2],
-            )
-        )
-        world_up = (0.0, 0.0, 1.0)
-        if abs(_dot(forward, world_up)) > 0.98:
-            world_up = (0.0, 1.0, 0.0)
-        right = _normalize(_cross(forward, world_up))
-        up = _normalize(_cross(right, forward))
-        return eye, forward, right, up
+        camera = self._camera_state()
+        return camera.eye, camera.forward, camera.right, camera.up
 
     def _project_point(
         self,
@@ -912,17 +1550,18 @@ if _HAS_QT_OPENGL:
             self.setMinimumWidth(320)
             self.setMinimumHeight(320)
             self._preview_result: PropellerPreviewResult | None = None
-            self._background = QColor("#161f2d")
+            self._background = QColor(_VIEWPORT_BACKGROUND_HEX)
             self._border = QColor("#2a3a50")
-            self._mesh_fill = QColor("#4d80c4")
-            self._mesh_wire = QColor("#dbe8fa")
+            self._mesh_fill = QColor(_VIEWPORT_SURFACE_HEX)
+            self._display_edge = QColor(_VIEWPORT_DISPLAY_EDGE_HEX)
+            self._mesh_wire = QColor(_VIEWPORT_WIREFRAME_HEX)
             self._section_color = QColor("#efad4d")
             self._text = QColor("#e8eef7")
             self._muted = QColor("#9fb0c8")
             self._show_mesh = True
             self._show_wireframe = True
-            self._yaw = -34.0
-            self._pitch = 18.0
+            self._yaw = _DEFAULT_ISO_YAW
+            self._pitch = _DEFAULT_ISO_PITCH
             self._distance = 4.0
             self._center = (0.0, 0.0, 0.0)
             self._last_pos = QPoint()
@@ -937,24 +1576,27 @@ if _HAS_QT_OPENGL:
 
             self._render_geometry = _RenderGeometry(vertices=[], faces=[])
             self._mesh_vertex_blob = b""
+            self._line_vertex_blob = b""
             self._mesh_triangle_blob = b""
             self._mesh_interactive_triangle_blob = b""
             self._mesh_wire_blob = b""
-            self._mesh_interactive_wire_blob = b""
+            self._display_edge_blob = b""
             self._section_vertex_blob = b""
             self._mesh_triangle_count = 0
             self._mesh_interactive_triangle_count = 0
             self._mesh_wire_count = 0
-            self._mesh_interactive_wire_count = 0
+            self._display_edge_count = 0
             self._section_ranges: list[tuple[int, int]] = []
+            self._display_edges: list[_DisplayEdge] = []
 
             self._mesh_program: QOpenGLShaderProgram | None = None
             self._line_program: QOpenGLShaderProgram | None = None
             self._mesh_vertex_buffer: QOpenGLBuffer | None = None
+            self._line_vertex_buffer: QOpenGLBuffer | None = None
             self._mesh_index_buffer: QOpenGLBuffer | None = None
             self._mesh_interactive_index_buffer: QOpenGLBuffer | None = None
             self._mesh_wire_index_buffer: QOpenGLBuffer | None = None
-            self._mesh_interactive_wire_index_buffer: QOpenGLBuffer | None = None
+            self._display_edge_index_buffer: QOpenGLBuffer | None = None
             self._section_vertex_buffer: QOpenGLBuffer | None = None
             self._gl = None
             self._gl_ready = False
@@ -978,17 +1620,13 @@ if _HAS_QT_OPENGL:
             self.update()
 
         def reset_view(self) -> None:
-            self._yaw = -34.0
-            self._pitch = 18.0
+            self.snap_to_named_view("Top-Front-Right")
             self._fit_to_mesh()
             self._settle_interaction()
             self.update()
 
         def apply_theme(self, colors: dict[str, str]) -> None:
-            self._background = QColor(colors["workspace_bg"])
             self._border = QColor(colors["border"])
-            self._mesh_fill = QColor(colors["accent"])
-            self._mesh_wire = QColor(colors["text_primary"])
             self._section_color = QColor(colors["port_output"])
             self._text = QColor(colors["text_primary"])
             self._muted = QColor(colors["text_muted"])
@@ -1023,6 +1661,7 @@ if _HAS_QT_OPENGL:
             if self._gpu_dirty:
                 self._upload_buffers()
 
+            camera = self._camera_state()
             if self._preview_result is not None and self._mesh_triangle_count:
                 mvp_matrix = self._build_mvp_matrix()
                 self._apply_pass_config(gl, _SURFACE_PASS_CONFIG)
@@ -1043,21 +1682,24 @@ if _HAS_QT_OPENGL:
                     Qt.AlignmentFlag.AlignCenter,
                     "3D preview waiting for geometry.",
                 )
-                return
-            painter.setPen(self._text)
-            painter.drawText(16, 22, "Blade Preview")
-            painter.setPen(self._muted)
-            painter.drawText(16, 40, "OpenGL: orbit, pan, zoom")
-            if self._interactive_preview and self._mesh_interactive_triangle_count:
-                painter.drawText(
-                    16,
-                    58,
-                    f"Adaptive preview: {self._mesh_interactive_triangle_count // 3:,} of {self._mesh_triangle_count // 3:,} faces",
-                )
+            self._draw_overlay_chrome(
+                painter,
+                camera,
+                adaptive_text=(
+                    None
+                    if not self._interactive_preview or not self._mesh_interactive_triangle_count
+                    else f"Adaptive preview: {self._mesh_interactive_triangle_count // 3:,} of {self._mesh_triangle_count // 3:,} faces"
+                ),
+            )
 
         def mousePressEvent(self, event) -> None:  # type: ignore[override]
             self._last_pos = event.position().toPoint()
             if event.button() == Qt.MouseButton.LeftButton:
+                target = self._hit_test_view_cube(event.position().toPoint())
+                if target is not None:
+                    self.snap_to_named_view(target.view_name)
+                    event.accept()
+                    return
                 self._drag_mode = "orbit"
             elif event.button() == Qt.MouseButton.RightButton:
                 self._drag_mode = "pan"
@@ -1104,6 +1746,14 @@ if _HAS_QT_OPENGL:
             self.update()
             super().wheelEvent(event)
 
+        def snap_to_named_view(self, view_name: str) -> None:
+            eye_direction = _named_view_eye_direction(view_name)
+            self._yaw = math.degrees(math.atan2(eye_direction[1], eye_direction[0]))
+            self._pitch = math.degrees(math.asin(max(-1.0, min(1.0, eye_direction[2]))))
+            self._drag_mode = None
+            self._settle_interaction()
+            self.update()
+
         def _create_programs(self) -> None:
             mesh_program = QOpenGLShaderProgram(self)
             mesh_program.addShaderFromSourceCode(
@@ -1129,7 +1779,7 @@ if _HAS_QT_OPENGL:
                 varying vec3 v_normal;
                 void main() {
                     float diffuse = max(dot(normalize(v_normal), normalize(u_light_direction)), 0.0);
-                    float brightness = 0.34 + diffuse * 0.66;
+                    float brightness = 0.86 + diffuse * 0.12;
                     gl_FragColor = vec4(u_base_color.rgb * brightness, u_base_color.a);
                 }
                 """,
@@ -1172,14 +1822,16 @@ if _HAS_QT_OPENGL:
         def _create_buffers(self) -> None:
             self._mesh_vertex_buffer = QOpenGLBuffer(QOpenGLBuffer.Type.VertexBuffer)
             self._mesh_vertex_buffer.create()
+            self._line_vertex_buffer = QOpenGLBuffer(QOpenGLBuffer.Type.VertexBuffer)
+            self._line_vertex_buffer.create()
             self._mesh_index_buffer = QOpenGLBuffer(QOpenGLBuffer.Type.IndexBuffer)
             self._mesh_index_buffer.create()
             self._mesh_interactive_index_buffer = QOpenGLBuffer(QOpenGLBuffer.Type.IndexBuffer)
             self._mesh_interactive_index_buffer.create()
             self._mesh_wire_index_buffer = QOpenGLBuffer(QOpenGLBuffer.Type.IndexBuffer)
             self._mesh_wire_index_buffer.create()
-            self._mesh_interactive_wire_index_buffer = QOpenGLBuffer(QOpenGLBuffer.Type.IndexBuffer)
-            self._mesh_interactive_wire_index_buffer.create()
+            self._display_edge_index_buffer = QOpenGLBuffer(QOpenGLBuffer.Type.IndexBuffer)
+            self._display_edge_index_buffer.create()
             self._section_vertex_buffer = QOpenGLBuffer(QOpenGLBuffer.Type.VertexBuffer)
             self._section_vertex_buffer.create()
 
@@ -1195,16 +1847,18 @@ if _HAS_QT_OPENGL:
         def _prepare_geometry_payloads(self) -> None:
             self._render_geometry = _RenderGeometry(vertices=[], faces=[])
             self._mesh_vertex_blob = b""
+            self._line_vertex_blob = b""
             self._mesh_triangle_blob = b""
             self._mesh_interactive_triangle_blob = b""
             self._mesh_wire_blob = b""
-            self._mesh_interactive_wire_blob = b""
+            self._display_edge_blob = b""
             self._section_vertex_blob = b""
             self._mesh_triangle_count = 0
             self._mesh_interactive_triangle_count = 0
             self._mesh_wire_count = 0
-            self._mesh_interactive_wire_count = 0
+            self._display_edge_count = 0
             self._section_ranges = []
+            self._display_edges = []
 
             if self._preview_result is None:
                 self._gpu_dirty = True
@@ -1220,6 +1874,11 @@ if _HAS_QT_OPENGL:
             if not self._render_geometry.vertices or not self._render_geometry.faces:
                 self._gpu_dirty = True
                 return
+
+            line_vertices = array("f")
+            for vertex in vertices:
+                line_vertices.extend([float(vertex[0]), float(vertex[1]), float(vertex[2])])
+            self._line_vertex_blob = line_vertices.tobytes()
 
             mesh_vertices = array("f")
             for render_vertex in self._render_geometry.vertices:
@@ -1257,11 +1916,12 @@ if _HAS_QT_OPENGL:
             self._mesh_wire_blob = wire_indices.tobytes()
             self._mesh_wire_count = len(wire_indices)
 
-            interactive_wire_indices = array("I")
-            for a, b, c in interactive_faces:
-                interactive_wire_indices.extend([a, b, b, c, c, a])
-            self._mesh_interactive_wire_blob = interactive_wire_indices.tobytes()
-            self._mesh_interactive_wire_count = len(interactive_wire_indices)
+            self._display_edges = _build_display_edges(vertices, faces)
+            display_edge_indices = array("I")
+            for edge in self._display_edges:
+                display_edge_indices.extend([edge.start, edge.end])
+            self._display_edge_blob = display_edge_indices.tobytes()
+            self._display_edge_count = len(display_edge_indices)
 
             section_vertices = array("f")
             vertex_offset = 0
@@ -1281,43 +1941,53 @@ if _HAS_QT_OPENGL:
             if not self._gl_ready:
                 return
             if self._mesh_vertex_buffer is not None:
-                self._mesh_vertex_buffer.bind()
-                self._mesh_vertex_buffer.allocate(
-                    self._mesh_vertex_blob, len(self._mesh_vertex_blob)
-                )
-                self._mesh_vertex_buffer.release()
+                blob_size = len(self._mesh_vertex_blob)
+                if blob_size:
+                    self._mesh_vertex_buffer.bind()
+                    self._mesh_vertex_buffer.allocate(self._mesh_vertex_blob, blob_size)
+                    self._mesh_vertex_buffer.release()
+            if self._line_vertex_buffer is not None:
+                blob_size = len(self._line_vertex_blob)
+                if blob_size:
+                    self._line_vertex_buffer.bind()
+                    self._line_vertex_buffer.allocate(self._line_vertex_blob, blob_size)
+                    self._line_vertex_buffer.release()
             if self._mesh_index_buffer is not None:
-                self._mesh_index_buffer.bind()
-                self._mesh_index_buffer.allocate(
-                    self._mesh_triangle_blob, len(self._mesh_triangle_blob)
-                )
-                self._mesh_index_buffer.release()
+                blob_size = len(self._mesh_triangle_blob)
+                if blob_size:
+                    self._mesh_index_buffer.bind()
+                    self._mesh_index_buffer.allocate(self._mesh_triangle_blob, blob_size)
+                    self._mesh_index_buffer.release()
             if self._mesh_interactive_index_buffer is not None:
-                self._mesh_interactive_index_buffer.bind()
-                self._mesh_interactive_index_buffer.allocate(
-                    self._mesh_interactive_triangle_blob,
-                    len(self._mesh_interactive_triangle_blob),
-                )
-                self._mesh_interactive_index_buffer.release()
+                blob_size = len(self._mesh_interactive_triangle_blob)
+                if blob_size:
+                    self._mesh_interactive_index_buffer.bind()
+                    self._mesh_interactive_index_buffer.allocate(
+                        self._mesh_interactive_triangle_blob,
+                        blob_size,
+                    )
+                    self._mesh_interactive_index_buffer.release()
             if self._mesh_wire_index_buffer is not None:
-                self._mesh_wire_index_buffer.bind()
-                self._mesh_wire_index_buffer.allocate(
-                    self._mesh_wire_blob, len(self._mesh_wire_blob)
-                )
-                self._mesh_wire_index_buffer.release()
-            if self._mesh_interactive_wire_index_buffer is not None:
-                self._mesh_interactive_wire_index_buffer.bind()
-                self._mesh_interactive_wire_index_buffer.allocate(
-                    self._mesh_interactive_wire_blob,
-                    len(self._mesh_interactive_wire_blob),
-                )
-                self._mesh_interactive_wire_index_buffer.release()
+                blob_size = len(self._mesh_wire_blob)
+                if blob_size:
+                    self._mesh_wire_index_buffer.bind()
+                    self._mesh_wire_index_buffer.allocate(self._mesh_wire_blob, blob_size)
+                    self._mesh_wire_index_buffer.release()
+            if self._display_edge_index_buffer is not None:
+                blob_size = len(self._display_edge_blob)
+                if blob_size:
+                    self._display_edge_index_buffer.bind()
+                    self._display_edge_index_buffer.allocate(
+                        self._display_edge_blob,
+                        blob_size,
+                    )
+                    self._display_edge_index_buffer.release()
             if self._section_vertex_buffer is not None:
-                self._section_vertex_buffer.bind()
-                self._section_vertex_buffer.allocate(
-                    self._section_vertex_blob, len(self._section_vertex_blob)
-                )
-                self._section_vertex_buffer.release()
+                blob_size = len(self._section_vertex_blob)
+                if blob_size:
+                    self._section_vertex_buffer.bind()
+                    self._section_vertex_buffer.allocate(self._section_vertex_blob, blob_size)
+                    self._section_vertex_buffer.release()
             self._gpu_dirty = False
 
         def _draw_mesh(self, gl, mvp_matrix: QMatrix4x4) -> None:
@@ -1338,7 +2008,7 @@ if _HAS_QT_OPENGL:
                     self._mesh_program.bind()
                     self._mesh_program.setUniformValue("u_mvp_matrix", mvp_matrix)
                     self._mesh_program.setUniformValue(
-                        "u_light_direction", QVector3D(0.35, -0.28, 0.89)
+                        "u_light_direction", QVector3D(*_normalize(_VIEWPORT_LIGHT_DIRECTION))
                     )
                     self._mesh_program.setUniformValue(
                         "u_base_color",
@@ -1363,10 +2033,36 @@ if _HAS_QT_OPENGL:
                     self._mesh_program.release()
 
         def _draw_overlays(self, gl, mvp_matrix: QMatrix4x4) -> None:
-            if self._interactive_preview or self._line_program is None:
+            if self._line_program is None:
                 return
 
-            if self._show_wireframe and self._mesh_vertex_buffer is not None:
+            if self._show_mesh and self._display_edge_count and self._line_vertex_buffer is not None and self._display_edge_index_buffer is not None:
+                self._line_program.bind()
+                self._line_program.setUniformValue("u_mvp_matrix", mvp_matrix)
+                self._line_program.setUniformValue("u_depth_bias", _DISPLAY_EDGE_DEPTH_BIAS)
+                self._line_program.setUniformValue(
+                    "u_base_color",
+                    QVector4D(
+                        self._display_edge.redF(),
+                        self._display_edge.greenF(),
+                        self._display_edge.blueF(),
+                        1.0,
+                    ),
+                )
+                self._line_vertex_buffer.bind()
+                self._line_program.enableAttributeArray(0)
+                self._line_program.setAttributeBuffer(0, GL_FLOAT, 0, 3, 12)
+                self._display_edge_index_buffer.bind()
+                gl.glDrawElements(GL_LINES, self._display_edge_count, GL_UNSIGNED_INT, None)
+                self._display_edge_index_buffer.release()
+                self._line_vertex_buffer.release()
+                self._line_program.disableAttributeArray(0)
+                self._line_program.release()
+
+            if self._interactive_preview:
+                return
+
+            if self._show_wireframe and self._line_vertex_buffer is not None:
                 wire_count = self._mesh_wire_count
                 wire_buffer = self._mesh_wire_index_buffer
                 if wire_count and wire_buffer is not None:
@@ -1382,13 +2078,13 @@ if _HAS_QT_OPENGL:
                             _OVERLAY_PASS_CONFIG.alpha,
                         ),
                     )
-                    self._mesh_vertex_buffer.bind()
+                    self._line_vertex_buffer.bind()
                     self._line_program.enableAttributeArray(0)
-                    self._line_program.setAttributeBuffer(0, GL_FLOAT, 0, 3, 24)
+                    self._line_program.setAttributeBuffer(0, GL_FLOAT, 0, 3, 12)
                     wire_buffer.bind()
                     gl.glDrawElements(GL_LINES, wire_count, GL_UNSIGNED_INT, None)
                     wire_buffer.release()
-                    self._mesh_vertex_buffer.release()
+                    self._line_vertex_buffer.release()
                     self._line_program.disableAttributeArray(0)
                     self._line_program.release()
 
@@ -1457,27 +2153,33 @@ if _HAS_QT_OPENGL:
             )
             self._distance = self._bounds_extent * 2.2
 
+        def _camera_state(self) -> _ViewportCameraState:
+            return _camera_state(self._center, self._distance, self._yaw, self._pitch)
+
+        def _view_cube_overlay(self) -> _ViewCubeOverlay:
+            return _build_view_cube_overlay(self._camera_state(), float(self.width()), float(self.height()))
+
+        def _hit_test_view_cube(self, point: QPoint) -> _ViewCubeHotspot | None:
+            return _hit_test_view_cube_overlay(self._view_cube_overlay(), (float(point.x()), float(point.y())))
+
+        def _draw_overlay_chrome(
+            self,
+            painter: QPainter,
+            camera: _ViewportCameraState,
+            adaptive_text: str | None = None,
+        ) -> None:
+            painter.setPen(self._text)
+            painter.drawText(16, 22, "Blade Preview")
+            painter.setPen(self._muted)
+            painter.drawText(16, 40, "Left drag: orbit | Right drag: pan | Wheel: zoom | Cube: snap views")
+            if adaptive_text:
+                painter.drawText(16, 58, adaptive_text)
+            _draw_axis_triad_overlay(painter, camera, float(self.height()))
+            _draw_view_cube_overlay(painter, self._view_cube_overlay())
+
         def _build_projection(self):
-            yaw_rad = math.radians(self._yaw)
-            pitch_rad = math.radians(self._pitch)
-            eye = (
-                self._center[0] + self._distance * math.cos(pitch_rad) * math.cos(yaw_rad),
-                self._center[1] + self._distance * math.cos(pitch_rad) * math.sin(yaw_rad),
-                self._center[2] + self._distance * math.sin(pitch_rad),
-            )
-            forward = _normalize(
-                (
-                    self._center[0] - eye[0],
-                    self._center[1] - eye[1],
-                    self._center[2] - eye[2],
-                )
-            )
-            world_up = (0.0, 0.0, 1.0)
-            if abs(_dot(forward, world_up)) > 0.98:
-                world_up = (0.0, 1.0, 0.0)
-            right = _normalize(_cross(forward, world_up))
-            up = _normalize(_cross(right, forward))
-            return eye, forward, right, up
+            camera = self._camera_state()
+            return camera.eye, camera.forward, camera.right, camera.up
 
         def _build_mvp_matrix(self) -> QMatrix4x4:
             eye, _forward, _right, up = self._build_projection()
@@ -1528,6 +2230,9 @@ class PropellerViewportWidget(QWidget):
 
     def reset_view(self) -> None:
         self._canvas.reset_view()  # type: ignore[attr-defined]
+
+    def snap_to_named_view(self, view_name: str) -> None:
+        self._canvas.snap_to_named_view(view_name)  # type: ignore[attr-defined]
 
     def apply_theme(self, colors: dict[str, str]) -> None:
         self._canvas.apply_theme(colors)  # type: ignore[attr-defined]
