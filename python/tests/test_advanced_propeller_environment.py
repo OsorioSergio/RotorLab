@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import math
+
 import pytest
 
 import rotorlab_app.services.propeller_preview_bridge as bridge_module
@@ -9,7 +11,13 @@ from rotorlab_app.models.propeller import (
     create_default_propeller_feature_state,
 )
 from rotorlab_app.services.propeller_preview_service import PropellerBuildService
-from rotorlab_app.ui.advanced_propeller import AdvancedPropellerWorkspace
+from rotorlab_app.ui.advanced_propeller import (
+    AdvancedPropellerWorkspace,
+    _OVERLAY_DEPTH_BIAS,
+    _OVERLAY_PASS_CONFIG,
+    _SURFACE_PASS_CONFIG,
+    _build_crease_aware_render_geometry,
+)
 from rotorlab_app.ui.main_window import RotorLabMainWindow
 from rotorlab_app.ui.orchestrate import WorkflowCanvasScene
 from rotorlab_app.ui.typography import default_typography_profile
@@ -161,6 +169,80 @@ def test_default_preview_settings_favor_surface_rendering():
     assert state.preview_settings.show_mesh
     assert not state.preview_settings.show_wireframe
     assert not state.preview_settings.show_sections
+
+
+def test_crease_aware_render_geometry_keeps_coplanar_faces_smooth():
+    geometry = _build_crease_aware_render_geometry(
+        vertices=[
+            (0.0, 0.0, 0.0),
+            (1.0, 0.0, 0.0),
+            (1.0, 1.0, 0.0),
+            (0.0, 1.0, 0.0),
+        ],
+        faces=[
+            (0, 1, 2),
+            (0, 2, 3),
+        ],
+    )
+
+    assert len(geometry.vertices) == 4
+    assert len(geometry.faces) == 2
+    assert {
+        tuple(round(component, 6) for component in vertex.normal)
+        for vertex in geometry.vertices
+    } == {(0.0, 0.0, 1.0)}
+
+
+def test_crease_aware_render_geometry_splits_normals_across_sharp_transition():
+    geometry = _build_crease_aware_render_geometry(
+        vertices=[
+            (0.0, 0.0, 0.0),
+            (1.0, 0.0, 0.0),
+            (0.0, 1.0, 0.0),
+            (0.0, 0.0, 1.0),
+        ],
+        faces=[
+            (0, 1, 2),
+            (0, 3, 1),
+        ],
+    )
+
+    assert len(geometry.vertices) == 6
+    first_normal = geometry.vertices[geometry.faces[0][0]].normal
+    second_normal = geometry.vertices[geometry.faces[1][0]].normal
+    assert geometry.faces[0][0] != geometry.faces[1][0]
+    assert abs(sum(left * right for left, right in zip(first_normal, second_normal))) < 0.1
+
+
+def test_crease_aware_render_geometry_handles_empty_and_degenerate_inputs():
+    empty = _build_crease_aware_render_geometry(vertices=[], faces=[])
+    assert empty.vertices == []
+    assert empty.faces == []
+
+    degenerate = _build_crease_aware_render_geometry(
+        vertices=[
+            (0.0, 0.0, 0.0),
+            (1.0, 0.0, 0.0),
+            (2.0, 0.0, 0.0),
+        ],
+        faces=[(0, 1, 2)],
+    )
+    assert len(degenerate.faces) == 1
+    assert len(degenerate.vertices) == 3
+    assert all(
+        math.isfinite(component)
+        for vertex in degenerate.vertices
+        for component in vertex.normal
+    )
+
+
+def test_render_pass_configs_keep_surface_opaque_and_overlays_non_destructive():
+    assert _SURFACE_PASS_CONFIG.alpha == pytest.approx(1.0)
+    assert not _SURFACE_PASS_CONFIG.blending_enabled
+    assert _SURFACE_PASS_CONFIG.depth_write_enabled
+    assert _OVERLAY_PASS_CONFIG.blending_enabled
+    assert not _OVERLAY_PASS_CONFIG.depth_write_enabled
+    assert _OVERLAY_DEPTH_BIAS > 0.0
 
 
 def test_build_service_reports_backend_missing(monkeypatch):

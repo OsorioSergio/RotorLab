@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 import os
 from array import array
+from collections import defaultdict
 from dataclasses import dataclass
 
 from PyQt6.QtCore import QPoint, QPointF, Qt, QTimer, pyqtSignal
@@ -68,6 +69,7 @@ GL_COLOR_BUFFER_BIT = 0x00004000
 GL_DEPTH_BUFFER_BIT = 0x00000100
 GL_DEPTH_TEST = 0x0B71
 GL_BLEND = 0x0BE2
+GL_CULL_FACE = 0x0B44
 GL_SRC_ALPHA = 0x0302
 GL_ONE_MINUS_SRC_ALPHA = 0x0303
 GL_TRIANGLES = 0x0004
@@ -82,6 +84,40 @@ class _ProjectedPoint:
     x: float
     y: float
     depth: float
+
+
+@dataclass(frozen=True)
+class _RenderVertex:
+    position: tuple[float, float, float]
+    normal: tuple[float, float, float]
+
+
+@dataclass(frozen=True)
+class _RenderGeometry:
+    vertices: list[_RenderVertex]
+    faces: list[tuple[int, int, int]]
+
+
+@dataclass(frozen=True)
+class _RenderPassConfig:
+    alpha: float
+    blending_enabled: bool
+    depth_write_enabled: bool
+
+
+_CREASE_ANGLE_DEGREES = 45.0
+_SURFACE_PASS_CONFIG = _RenderPassConfig(
+    alpha=1.0,
+    blending_enabled=False,
+    depth_write_enabled=True,
+)
+_OVERLAY_PASS_CONFIG = _RenderPassConfig(
+    alpha=0.92,
+    blending_enabled=True,
+    depth_write_enabled=False,
+)
+_SECTION_OVERLAY_ALPHA = 0.88
+_OVERLAY_DEPTH_BIAS = 0.00035
 
 
 def _series_color(index: int) -> QColor:
@@ -127,6 +163,97 @@ def _sub(
     right: tuple[float, float, float],
 ) -> tuple[float, float, float]:
     return (left[0] - right[0], left[1] - right[1], left[2] - right[2])
+
+
+def _face_normal(
+    vertices: list[tuple[float, float, float]],
+    face: tuple[int, int, int],
+) -> tuple[float, float, float]:
+    first, second, third = face
+    return _normalize(
+        _cross(
+            _sub(vertices[second], vertices[first]),
+            _sub(vertices[third], vertices[first]),
+        )
+    )
+
+
+def _build_crease_aware_render_geometry(
+    vertices: list[tuple[float, float, float]],
+    faces: list[tuple[int, int, int]],
+    crease_angle_deg: float = _CREASE_ANGLE_DEGREES,
+) -> _RenderGeometry:
+    if not vertices or not faces:
+        return _RenderGeometry(vertices=[], faces=[])
+
+    incident_faces: defaultdict[int, list[int]] = defaultdict(list)
+    face_normals = [_face_normal(vertices, face) for face in faces]
+    for face_index, face in enumerate(faces):
+        for vertex_index in face:
+            incident_faces[vertex_index].append(face_index)
+
+    render_vertices: list[_RenderVertex] = []
+    corner_lookup: dict[tuple[int, int], int] = {}
+    crease_cosine = math.cos(math.radians(crease_angle_deg))
+
+    for vertex_index in sorted(incident_faces):
+        clusters: list[dict[str, object]] = []
+        for face_index in incident_faces[vertex_index]:
+            normal = face_normals[face_index]
+            best_cluster_index: int | None = None
+            best_similarity = crease_cosine
+            for cluster_index, cluster in enumerate(clusters):
+                cluster_sum = cluster["sum"]
+                if not isinstance(cluster_sum, tuple):
+                    continue
+                similarity = _dot(_normalize(cluster_sum), normal)
+                if similarity >= best_similarity:
+                    best_similarity = similarity
+                    best_cluster_index = cluster_index
+
+            if best_cluster_index is None:
+                clusters.append(
+                    {
+                        "sum": normal,
+                        "faces": [face_index],
+                    }
+                )
+                continue
+
+            cluster = clusters[best_cluster_index]
+            cluster_sum = cluster["sum"]
+            cluster_faces = cluster["faces"]
+            if isinstance(cluster_sum, tuple) and isinstance(cluster_faces, list):
+                cluster["sum"] = (
+                    cluster_sum[0] + normal[0],
+                    cluster_sum[1] + normal[1],
+                    cluster_sum[2] + normal[2],
+                )
+                cluster_faces.append(face_index)
+
+        for cluster in clusters:
+            cluster_sum = cluster["sum"]
+            cluster_faces = cluster["faces"]
+            if not isinstance(cluster_sum, tuple) or not isinstance(cluster_faces, list):
+                continue
+            render_index = len(render_vertices)
+            render_vertices.append(
+                _RenderVertex(
+                    position=vertices[vertex_index],
+                    normal=_normalize(cluster_sum),
+                )
+            )
+            for face_index in cluster_faces:
+                corner_lookup[(face_index, vertex_index)] = render_index
+
+    render_faces = [
+        tuple(
+            corner_lookup[(face_index, vertex_index)]
+            for vertex_index in face
+        )
+        for face_index, face in enumerate(faces)
+    ]
+    return _RenderGeometry(vertices=render_vertices, faces=render_faces)
 
 
 class DistributionEditorWidget(QWidget):
@@ -570,7 +697,7 @@ class _SoftwarePropellerViewportWidget(QWidget):
                 normal = _normalize(_cross(_sub(world[1], world[0]), _sub(world[2], world[0])))
             brightness = 0.34 + max(0.0, _dot(normal, light_direction)) * 0.66
             fill = QColor(self._mesh_fill)
-            fill.setAlpha(216 if show_wireframe else 232)
+            fill.setAlphaF(_SURFACE_PASS_CONFIG.alpha)
             fill = fill.lighter(int(100 * brightness + 18))
             face_polygons.append((sum(point.depth for point in points) / len(points), polygon, fill))
 
@@ -808,7 +935,7 @@ if _HAS_QT_OPENGL:
             self._interaction_timer.setInterval(140)
             self._interaction_timer.timeout.connect(self._settle_interaction)
 
-            self._vertex_normals: list[tuple[float, float, float]] = []
+            self._render_geometry = _RenderGeometry(vertices=[], faces=[])
             self._mesh_vertex_blob = b""
             self._mesh_triangle_blob = b""
             self._mesh_interactive_triangle_blob = b""
@@ -875,8 +1002,8 @@ if _HAS_QT_OPENGL:
                 raise RuntimeError("Could not create OpenGL 2.0 function table.")
             self._gl.initializeOpenGLFunctions()
             self._gl.glEnable(GL_DEPTH_TEST)
-            self._gl.glEnable(GL_BLEND)
-            self._gl.glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
+            self._gl.glDisable(GL_BLEND)
+            self._gl.glDisable(GL_CULL_FACE)
             self._create_programs()
             self._create_buffers()
             self._gl_ready = True
@@ -898,8 +1025,12 @@ if _HAS_QT_OPENGL:
 
             if self._preview_result is not None and self._mesh_triangle_count:
                 mvp_matrix = self._build_mvp_matrix()
+                self._apply_pass_config(gl, _SURFACE_PASS_CONFIG)
                 self._draw_mesh(gl, mvp_matrix)
+                self._apply_pass_config(gl, _OVERLAY_PASS_CONFIG)
                 self._draw_overlays(gl, mvp_matrix)
+                gl.glDepthMask(True)
+                gl.glDisable(GL_BLEND)
 
             painter = QPainter(self)
             painter.setRenderHint(QPainter.RenderHint.Antialiasing, not self._interactive_preview)
@@ -1014,8 +1145,11 @@ if _HAS_QT_OPENGL:
                 #version 120
                 attribute vec3 a_position;
                 uniform mat4 u_mvp_matrix;
+                uniform float u_depth_bias;
                 void main() {
-                    gl_Position = u_mvp_matrix * vec4(a_position, 1.0);
+                    vec4 clip_position = u_mvp_matrix * vec4(a_position, 1.0);
+                    clip_position.z -= u_depth_bias * clip_position.w;
+                    gl_Position = clip_position;
                 }
                 """,
             )
@@ -1049,8 +1183,17 @@ if _HAS_QT_OPENGL:
             self._section_vertex_buffer = QOpenGLBuffer(QOpenGLBuffer.Type.VertexBuffer)
             self._section_vertex_buffer.create()
 
+        def _apply_pass_config(self, gl, config: _RenderPassConfig) -> None:
+            gl.glEnable(GL_DEPTH_TEST)
+            gl.glDepthMask(config.depth_write_enabled)
+            if config.blending_enabled:
+                gl.glEnable(GL_BLEND)
+                gl.glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
+            else:
+                gl.glDisable(GL_BLEND)
+
         def _prepare_geometry_payloads(self) -> None:
-            self._vertex_normals = []
+            self._render_geometry = _RenderGeometry(vertices=[], faces=[])
             self._mesh_vertex_blob = b""
             self._mesh_triangle_blob = b""
             self._mesh_interactive_triangle_blob = b""
@@ -1073,36 +1216,31 @@ if _HAS_QT_OPENGL:
                 self._gpu_dirty = True
                 return
 
-            accumulated = [[0.0, 0.0, 0.0] for _ in vertices]
-            for a, b, c in faces:
-                normal = _cross(_sub(vertices[b], vertices[a]), _sub(vertices[c], vertices[a]))
-                for index in (a, b, c):
-                    accumulated[index][0] += normal[0]
-                    accumulated[index][1] += normal[1]
-                    accumulated[index][2] += normal[2]
-            self._vertex_normals = [
-                _normalize((normal[0], normal[1], normal[2])) for normal in accumulated
-            ]
+            self._render_geometry = _build_crease_aware_render_geometry(vertices, faces)
+            if not self._render_geometry.vertices or not self._render_geometry.faces:
+                self._gpu_dirty = True
+                return
 
             mesh_vertices = array("f")
-            for vertex, normal in zip(vertices, self._vertex_normals):
+            for render_vertex in self._render_geometry.vertices:
                 mesh_vertices.extend(
                     [
-                        float(vertex[0]),
-                        float(vertex[1]),
-                        float(vertex[2]),
-                        float(normal[0]),
-                        float(normal[1]),
-                        float(normal[2]),
+                        float(render_vertex.position[0]),
+                        float(render_vertex.position[1]),
+                        float(render_vertex.position[2]),
+                        float(render_vertex.normal[0]),
+                        float(render_vertex.normal[1]),
+                        float(render_vertex.normal[2]),
                     ]
                 )
             self._mesh_vertex_blob = mesh_vertices.tobytes()
 
-            face_step = max(1, math.ceil(len(faces) / self._interactive_face_budget))
-            interactive_faces = faces[::face_step]
+            render_faces = self._render_geometry.faces
+            face_step = max(1, math.ceil(len(render_faces) / self._interactive_face_budget))
+            interactive_faces = render_faces[::face_step]
 
             triangle_indices = array("I")
-            for a, b, c in faces:
+            for a, b, c in render_faces:
                 triangle_indices.extend([a, b, c])
             self._mesh_triangle_blob = triangle_indices.tobytes()
             self._mesh_triangle_count = len(triangle_indices)
@@ -1202,15 +1340,13 @@ if _HAS_QT_OPENGL:
                     self._mesh_program.setUniformValue(
                         "u_light_direction", QVector3D(0.35, -0.28, 0.89)
                     )
-                    fill = QColor(self._mesh_fill)
-                    fill.setAlpha(232 if not self._show_wireframe else 216)
                     self._mesh_program.setUniformValue(
                         "u_base_color",
                         QVector4D(
-                            fill.redF(),
-                            fill.greenF(),
-                            fill.blueF(),
-                            fill.alphaF(),
+                            self._mesh_fill.redF(),
+                            self._mesh_fill.greenF(),
+                            self._mesh_fill.blueF(),
+                            _SURFACE_PASS_CONFIG.alpha,
                         ),
                     )
                     self._mesh_vertex_buffer.bind()
@@ -1226,32 +1362,24 @@ if _HAS_QT_OPENGL:
                     self._mesh_program.disableAttributeArray(1)
                     self._mesh_program.release()
 
-            if (
-                self._show_wireframe
-                and not self._interactive_preview
-                and self._line_program is not None
-                and self._mesh_vertex_buffer is not None
-            ):
-                wire_count = (
-                    self._mesh_interactive_wire_count
-                    if self._interactive_preview
-                    else self._mesh_wire_count
-                )
-                wire_buffer = (
-                    self._mesh_interactive_wire_index_buffer
-                    if self._interactive_preview
-                    else self._mesh_wire_index_buffer
-                )
+        def _draw_overlays(self, gl, mvp_matrix: QMatrix4x4) -> None:
+            if self._interactive_preview or self._line_program is None:
+                return
+
+            if self._show_wireframe and self._mesh_vertex_buffer is not None:
+                wire_count = self._mesh_wire_count
+                wire_buffer = self._mesh_wire_index_buffer
                 if wire_count and wire_buffer is not None:
                     self._line_program.bind()
                     self._line_program.setUniformValue("u_mvp_matrix", mvp_matrix)
+                    self._line_program.setUniformValue("u_depth_bias", _OVERLAY_DEPTH_BIAS)
                     self._line_program.setUniformValue(
                         "u_base_color",
                         QVector4D(
                             self._mesh_wire.redF(),
                             self._mesh_wire.greenF(),
                             self._mesh_wire.blueF(),
-                            0.92,
+                            _OVERLAY_PASS_CONFIG.alpha,
                         ),
                     )
                     self._mesh_vertex_buffer.bind()
@@ -1264,23 +1392,18 @@ if _HAS_QT_OPENGL:
                     self._line_program.disableAttributeArray(0)
                     self._line_program.release()
 
-        def _draw_overlays(self, gl, mvp_matrix: QMatrix4x4) -> None:
-            if (
-                self._interactive_preview
-                or self._line_program is None
-                or self._section_vertex_buffer is None
-                or not self._section_ranges
-            ):
+            if self._section_vertex_buffer is None or not self._section_ranges:
                 return
             self._line_program.bind()
             self._line_program.setUniformValue("u_mvp_matrix", mvp_matrix)
+            self._line_program.setUniformValue("u_depth_bias", _OVERLAY_DEPTH_BIAS)
             self._line_program.setUniformValue(
                 "u_base_color",
                 QVector4D(
                     self._section_color.redF(),
                     self._section_color.greenF(),
                     self._section_color.blueF(),
-                    0.88,
+                    _SECTION_OVERLAY_ALPHA,
                 ),
             )
             self._section_vertex_buffer.bind()
