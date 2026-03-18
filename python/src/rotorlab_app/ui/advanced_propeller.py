@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import math
+import os
+from array import array
 from dataclasses import dataclass
 
 from PyQt6.QtCore import QPoint, QPointF, Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QColor, QPainter, QPainterPath, QPen, QPolygonF
+from PyQt6.QtGui import QColor, QMatrix4x4, QPainter, QPainterPath, QPen, QPolygonF, QVector3D, QVector4D
 from PyQt6.QtWidgets import (
+    QApplication,
     QCheckBox,
     QComboBox,
     QFormLayout,
@@ -29,6 +32,26 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+try:
+    from PyQt6.QtOpenGL import (
+        QOpenGLBuffer,
+        QOpenGLShader,
+        QOpenGLShaderProgram,
+        QOpenGLVersionFunctionsFactory,
+        QOpenGLVersionProfile,
+    )
+    from PyQt6.QtOpenGLWidgets import QOpenGLWidget
+
+    _HAS_QT_OPENGL = True
+except ImportError:  # pragma: no cover - depends on Qt installation
+    QOpenGLBuffer = None  # type: ignore[assignment]
+    QOpenGLShader = None  # type: ignore[assignment]
+    QOpenGLShaderProgram = None  # type: ignore[assignment]
+    QOpenGLVersionFunctionsFactory = None  # type: ignore[assignment]
+    QOpenGLVersionProfile = None  # type: ignore[assignment]
+    QOpenGLWidget = None  # type: ignore[assignment]
+    _HAS_QT_OPENGL = False
+
 from rotorlab_app.models.propeller import (
     ACTIVE_PROPELLER_STAGES,
     DEFERRED_PROPELLER_STAGES,
@@ -39,6 +62,19 @@ from rotorlab_app.models.propeller import (
 )
 from rotorlab_app.services.propeller_preview_service import PropellerPreviewService
 from rotorlab_app.ui.typography import TypographyManager, TypographyProfile, TypographyRole
+
+
+GL_COLOR_BUFFER_BIT = 0x00004000
+GL_DEPTH_BUFFER_BIT = 0x00000100
+GL_DEPTH_TEST = 0x0B71
+GL_BLEND = 0x0BE2
+GL_SRC_ALPHA = 0x0302
+GL_ONE_MINUS_SRC_ALPHA = 0x0303
+GL_TRIANGLES = 0x0004
+GL_LINES = 0x0001
+GL_LINE_STRIP = 0x0003
+GL_UNSIGNED_INT = 0x1405
+GL_FLOAT = 0x1406
 
 
 @dataclass(frozen=True)
@@ -420,7 +456,7 @@ class SectionPreviewWidget(QWidget):
         painter.drawPath(lower_path)
 
 
-class PropellerViewportWidget(QWidget):
+class _SoftwarePropellerViewportWidget(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("PropellerViewport")
@@ -726,6 +762,654 @@ class PropellerViewportWidget(QWidget):
         return _ProjectedPoint(screen_x, screen_y, cam_z)
 
 
+def _should_use_opengl_viewport() -> bool:
+    if not _HAS_QT_OPENGL:
+        return False
+    if os.environ.get("ROTORLAB_FORCE_SOFTWARE_VIEWPORT") == "1":
+        return False
+    if "PYTEST_CURRENT_TEST" in os.environ or "PYTEST_VERSION" in os.environ:
+        return False
+    qpa_platform = (os.environ.get("QT_QPA_PLATFORM") or "").lower()
+    if qpa_platform in {"offscreen", "minimal"}:
+        return False
+    app = QApplication.instance()
+    platform_name = app.platformName().lower() if app is not None else ""
+    return platform_name not in {"offscreen", "minimal"}
+
+
+if _HAS_QT_OPENGL:
+    class _OpenGLPropellerViewportWidget(QOpenGLWidget):
+        def __init__(self, parent: QWidget | None = None) -> None:
+            super().__init__(parent)
+            self.setObjectName("PropellerViewport")
+            self.setMinimumWidth(320)
+            self.setMinimumHeight(320)
+            self._preview_result: PropellerPreviewResult | None = None
+            self._background = QColor("#161f2d")
+            self._border = QColor("#2a3a50")
+            self._mesh_fill = QColor("#4d80c4")
+            self._mesh_wire = QColor("#dbe8fa")
+            self._section_color = QColor("#efad4d")
+            self._text = QColor("#e8eef7")
+            self._muted = QColor("#9fb0c8")
+            self._show_mesh = True
+            self._show_wireframe = True
+            self._yaw = -34.0
+            self._pitch = 18.0
+            self._distance = 4.0
+            self._center = (0.0, 0.0, 0.0)
+            self._last_pos = QPoint()
+            self._drag_mode: str | None = None
+            self._bounds_extent = 2.0
+            self._interactive_preview = False
+            self._interactive_face_budget = 7000
+            self._interaction_timer = QTimer(self)
+            self._interaction_timer.setSingleShot(True)
+            self._interaction_timer.setInterval(140)
+            self._interaction_timer.timeout.connect(self._settle_interaction)
+
+            self._vertex_normals: list[tuple[float, float, float]] = []
+            self._mesh_vertex_blob = b""
+            self._mesh_triangle_blob = b""
+            self._mesh_interactive_triangle_blob = b""
+            self._mesh_wire_blob = b""
+            self._mesh_interactive_wire_blob = b""
+            self._section_vertex_blob = b""
+            self._mesh_triangle_count = 0
+            self._mesh_interactive_triangle_count = 0
+            self._mesh_wire_count = 0
+            self._mesh_interactive_wire_count = 0
+            self._section_ranges: list[tuple[int, int]] = []
+
+            self._mesh_program: QOpenGLShaderProgram | None = None
+            self._line_program: QOpenGLShaderProgram | None = None
+            self._mesh_vertex_buffer: QOpenGLBuffer | None = None
+            self._mesh_index_buffer: QOpenGLBuffer | None = None
+            self._mesh_interactive_index_buffer: QOpenGLBuffer | None = None
+            self._mesh_wire_index_buffer: QOpenGLBuffer | None = None
+            self._mesh_interactive_wire_index_buffer: QOpenGLBuffer | None = None
+            self._section_vertex_buffer: QOpenGLBuffer | None = None
+            self._gl = None
+            self._gl_ready = False
+            self._gpu_dirty = False
+
+        def set_preview_result(self, result: PropellerPreviewResult | None) -> None:
+            self._preview_result = result
+            self._prepare_geometry_payloads()
+            self._fit_to_mesh()
+            self._settle_interaction()
+            self.update()
+
+        def mesh_face_count(self) -> int:
+            if self._preview_result is None:
+                return 0
+            return len(self._preview_result.mesh.faces)
+
+        def set_preview_options(self, show_mesh: bool, show_wireframe: bool) -> None:
+            self._show_mesh = show_mesh
+            self._show_wireframe = show_wireframe
+            self.update()
+
+        def reset_view(self) -> None:
+            self._yaw = -34.0
+            self._pitch = 18.0
+            self._fit_to_mesh()
+            self._settle_interaction()
+            self.update()
+
+        def apply_theme(self, colors: dict[str, str]) -> None:
+            self._background = QColor(colors["workspace_bg"])
+            self._border = QColor(colors["border"])
+            self._mesh_fill = QColor(colors["accent"])
+            self._mesh_wire = QColor(colors["text_primary"])
+            self._section_color = QColor(colors["port_output"])
+            self._text = QColor(colors["text_primary"])
+            self._muted = QColor(colors["text_muted"])
+            self.update()
+
+        def initializeGL(self) -> None:  # type: ignore[override]
+            profile = QOpenGLVersionProfile()
+            profile.setVersion(2, 0)
+            self._gl = QOpenGLVersionFunctionsFactory.get(profile, self.context())
+            if self._gl is None:
+                raise RuntimeError("Could not create OpenGL 2.0 function table.")
+            self._gl.initializeOpenGLFunctions()
+            self._gl.glEnable(GL_DEPTH_TEST)
+            self._gl.glEnable(GL_BLEND)
+            self._gl.glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
+            self._create_programs()
+            self._create_buffers()
+            self._gl_ready = True
+            self._upload_buffers()
+
+        def paintGL(self) -> None:  # type: ignore[override]
+            if self._gl is None:
+                return
+            gl = self._gl
+            gl.glClearColor(
+                self._background.redF(),
+                self._background.greenF(),
+                self._background.blueF(),
+                1.0,
+            )
+            gl.glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
+            if self._gpu_dirty:
+                self._upload_buffers()
+
+            if self._preview_result is not None and self._mesh_triangle_count:
+                mvp_matrix = self._build_mvp_matrix()
+                self._draw_mesh(gl, mvp_matrix)
+                self._draw_overlays(gl, mvp_matrix)
+
+            painter = QPainter(self)
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing, not self._interactive_preview)
+            painter.setPen(QPen(self._border, 1))
+            painter.drawRect(self.rect().adjusted(0, 0, -1, -1))
+            if self._preview_result is None or not self._mesh_triangle_count:
+                painter.setPen(self._muted)
+                painter.drawText(
+                    self.rect(),
+                    Qt.AlignmentFlag.AlignCenter,
+                    "3D preview waiting for geometry.",
+                )
+                return
+            painter.setPen(self._text)
+            painter.drawText(16, 22, "Blade Preview")
+            painter.setPen(self._muted)
+            painter.drawText(16, 40, "OpenGL: orbit, pan, zoom")
+            if self._interactive_preview and self._mesh_interactive_triangle_count:
+                painter.drawText(
+                    16,
+                    58,
+                    f"Adaptive preview: {self._mesh_interactive_triangle_count // 3:,} of {self._mesh_triangle_count // 3:,} faces",
+                )
+
+        def mousePressEvent(self, event) -> None:  # type: ignore[override]
+            self._last_pos = event.position().toPoint()
+            if event.button() == Qt.MouseButton.LeftButton:
+                self._drag_mode = "orbit"
+            elif event.button() == Qt.MouseButton.RightButton:
+                self._drag_mode = "pan"
+            else:
+                self._drag_mode = None
+            if self._drag_mode is not None:
+                self._begin_interaction()
+            super().mousePressEvent(event)
+
+        def mouseMoveEvent(self, event) -> None:  # type: ignore[override]
+            if self._drag_mode is None:
+                super().mouseMoveEvent(event)
+                return
+
+            position = event.position().toPoint()
+            delta = position - self._last_pos
+            self._last_pos = position
+            if self._drag_mode == "orbit":
+                self._yaw += delta.x() * 0.6
+                self._pitch = max(-80.0, min(80.0, self._pitch + delta.y() * 0.4))
+            else:
+                _, _forward, right, up = self._build_projection()
+                scale = self._distance * 0.0018
+                self._center = (
+                    self._center[0] - right[0] * delta.x() * scale + up[0] * delta.y() * scale,
+                    self._center[1] - right[1] * delta.x() * scale + up[1] * delta.y() * scale,
+                    self._center[2] - right[2] * delta.x() * scale + up[2] * delta.y() * scale,
+                )
+            self._begin_interaction()
+            self.update()
+            super().mouseMoveEvent(event)
+
+        def mouseReleaseEvent(self, event) -> None:  # type: ignore[override]
+            self._drag_mode = None
+            super().mouseReleaseEvent(event)
+
+        def wheelEvent(self, event) -> None:  # type: ignore[override]
+            factor = 0.86 if event.angleDelta().y() > 0 else 1.16
+            self._distance = max(
+                self._bounds_extent * 0.6,
+                min(self._bounds_extent * 30.0, self._distance * factor),
+            )
+            self._begin_interaction()
+            self.update()
+            super().wheelEvent(event)
+
+        def _create_programs(self) -> None:
+            mesh_program = QOpenGLShaderProgram(self)
+            mesh_program.addShaderFromSourceCode(
+                QOpenGLShader.ShaderTypeBit.Vertex,
+                """
+                #version 120
+                attribute vec3 a_position;
+                attribute vec3 a_normal;
+                uniform mat4 u_mvp_matrix;
+                varying vec3 v_normal;
+                void main() {
+                    v_normal = normalize(a_normal);
+                    gl_Position = u_mvp_matrix * vec4(a_position, 1.0);
+                }
+                """,
+            )
+            mesh_program.addShaderFromSourceCode(
+                QOpenGLShader.ShaderTypeBit.Fragment,
+                """
+                #version 120
+                uniform vec4 u_base_color;
+                uniform vec3 u_light_direction;
+                varying vec3 v_normal;
+                void main() {
+                    float diffuse = max(dot(normalize(v_normal), normalize(u_light_direction)), 0.0);
+                    float brightness = 0.34 + diffuse * 0.66;
+                    gl_FragColor = vec4(u_base_color.rgb * brightness, u_base_color.a);
+                }
+                """,
+            )
+            mesh_program.bindAttributeLocation("a_position", 0)
+            mesh_program.bindAttributeLocation("a_normal", 1)
+            mesh_program.link()
+
+            line_program = QOpenGLShaderProgram(self)
+            line_program.addShaderFromSourceCode(
+                QOpenGLShader.ShaderTypeBit.Vertex,
+                """
+                #version 120
+                attribute vec3 a_position;
+                uniform mat4 u_mvp_matrix;
+                void main() {
+                    gl_Position = u_mvp_matrix * vec4(a_position, 1.0);
+                }
+                """,
+            )
+            line_program.addShaderFromSourceCode(
+                QOpenGLShader.ShaderTypeBit.Fragment,
+                """
+                #version 120
+                uniform vec4 u_base_color;
+                void main() {
+                    gl_FragColor = u_base_color;
+                }
+                """,
+            )
+            line_program.bindAttributeLocation("a_position", 0)
+            line_program.link()
+
+            self._mesh_program = mesh_program
+            self._line_program = line_program
+
+        def _create_buffers(self) -> None:
+            self._mesh_vertex_buffer = QOpenGLBuffer(QOpenGLBuffer.Type.VertexBuffer)
+            self._mesh_vertex_buffer.create()
+            self._mesh_index_buffer = QOpenGLBuffer(QOpenGLBuffer.Type.IndexBuffer)
+            self._mesh_index_buffer.create()
+            self._mesh_interactive_index_buffer = QOpenGLBuffer(QOpenGLBuffer.Type.IndexBuffer)
+            self._mesh_interactive_index_buffer.create()
+            self._mesh_wire_index_buffer = QOpenGLBuffer(QOpenGLBuffer.Type.IndexBuffer)
+            self._mesh_wire_index_buffer.create()
+            self._mesh_interactive_wire_index_buffer = QOpenGLBuffer(QOpenGLBuffer.Type.IndexBuffer)
+            self._mesh_interactive_wire_index_buffer.create()
+            self._section_vertex_buffer = QOpenGLBuffer(QOpenGLBuffer.Type.VertexBuffer)
+            self._section_vertex_buffer.create()
+
+        def _prepare_geometry_payloads(self) -> None:
+            self._vertex_normals = []
+            self._mesh_vertex_blob = b""
+            self._mesh_triangle_blob = b""
+            self._mesh_interactive_triangle_blob = b""
+            self._mesh_wire_blob = b""
+            self._mesh_interactive_wire_blob = b""
+            self._section_vertex_blob = b""
+            self._mesh_triangle_count = 0
+            self._mesh_interactive_triangle_count = 0
+            self._mesh_wire_count = 0
+            self._mesh_interactive_wire_count = 0
+            self._section_ranges = []
+
+            if self._preview_result is None:
+                self._gpu_dirty = True
+                return
+
+            vertices = self._preview_result.mesh.vertices
+            faces = self._preview_result.mesh.faces
+            if not vertices or not faces:
+                self._gpu_dirty = True
+                return
+
+            accumulated = [[0.0, 0.0, 0.0] for _ in vertices]
+            for a, b, c in faces:
+                normal = _cross(_sub(vertices[b], vertices[a]), _sub(vertices[c], vertices[a]))
+                for index in (a, b, c):
+                    accumulated[index][0] += normal[0]
+                    accumulated[index][1] += normal[1]
+                    accumulated[index][2] += normal[2]
+            self._vertex_normals = [
+                _normalize((normal[0], normal[1], normal[2])) for normal in accumulated
+            ]
+
+            mesh_vertices = array("f")
+            for vertex, normal in zip(vertices, self._vertex_normals):
+                mesh_vertices.extend(
+                    [
+                        float(vertex[0]),
+                        float(vertex[1]),
+                        float(vertex[2]),
+                        float(normal[0]),
+                        float(normal[1]),
+                        float(normal[2]),
+                    ]
+                )
+            self._mesh_vertex_blob = mesh_vertices.tobytes()
+
+            face_step = max(1, math.ceil(len(faces) / self._interactive_face_budget))
+            interactive_faces = faces[::face_step]
+
+            triangle_indices = array("I")
+            for a, b, c in faces:
+                triangle_indices.extend([a, b, c])
+            self._mesh_triangle_blob = triangle_indices.tobytes()
+            self._mesh_triangle_count = len(triangle_indices)
+
+            interactive_triangle_indices = array("I")
+            for a, b, c in interactive_faces:
+                interactive_triangle_indices.extend([a, b, c])
+            self._mesh_interactive_triangle_blob = interactive_triangle_indices.tobytes()
+            self._mesh_interactive_triangle_count = len(interactive_triangle_indices)
+
+            wire_indices = array("I")
+            for a, b, c in faces:
+                wire_indices.extend([a, b, b, c, c, a])
+            self._mesh_wire_blob = wire_indices.tobytes()
+            self._mesh_wire_count = len(wire_indices)
+
+            interactive_wire_indices = array("I")
+            for a, b, c in interactive_faces:
+                interactive_wire_indices.extend([a, b, b, c, c, a])
+            self._mesh_interactive_wire_blob = interactive_wire_indices.tobytes()
+            self._mesh_interactive_wire_count = len(interactive_wire_indices)
+
+            section_vertices = array("f")
+            vertex_offset = 0
+            for polyline in self._preview_result.mesh.section_polylines:
+                if len(polyline) < 2:
+                    continue
+                self._section_ranges.append((vertex_offset, len(polyline)))
+                for point in polyline:
+                    section_vertices.extend(
+                        [float(point[0]), float(point[1]), float(point[2])]
+                    )
+                vertex_offset += len(polyline)
+            self._section_vertex_blob = section_vertices.tobytes()
+            self._gpu_dirty = True
+
+        def _upload_buffers(self) -> None:
+            if not self._gl_ready:
+                return
+            if self._mesh_vertex_buffer is not None:
+                self._mesh_vertex_buffer.bind()
+                self._mesh_vertex_buffer.allocate(
+                    self._mesh_vertex_blob, len(self._mesh_vertex_blob)
+                )
+                self._mesh_vertex_buffer.release()
+            if self._mesh_index_buffer is not None:
+                self._mesh_index_buffer.bind()
+                self._mesh_index_buffer.allocate(
+                    self._mesh_triangle_blob, len(self._mesh_triangle_blob)
+                )
+                self._mesh_index_buffer.release()
+            if self._mesh_interactive_index_buffer is not None:
+                self._mesh_interactive_index_buffer.bind()
+                self._mesh_interactive_index_buffer.allocate(
+                    self._mesh_interactive_triangle_blob,
+                    len(self._mesh_interactive_triangle_blob),
+                )
+                self._mesh_interactive_index_buffer.release()
+            if self._mesh_wire_index_buffer is not None:
+                self._mesh_wire_index_buffer.bind()
+                self._mesh_wire_index_buffer.allocate(
+                    self._mesh_wire_blob, len(self._mesh_wire_blob)
+                )
+                self._mesh_wire_index_buffer.release()
+            if self._mesh_interactive_wire_index_buffer is not None:
+                self._mesh_interactive_wire_index_buffer.bind()
+                self._mesh_interactive_wire_index_buffer.allocate(
+                    self._mesh_interactive_wire_blob,
+                    len(self._mesh_interactive_wire_blob),
+                )
+                self._mesh_interactive_wire_index_buffer.release()
+            if self._section_vertex_buffer is not None:
+                self._section_vertex_buffer.bind()
+                self._section_vertex_buffer.allocate(
+                    self._section_vertex_blob, len(self._section_vertex_blob)
+                )
+                self._section_vertex_buffer.release()
+            self._gpu_dirty = False
+
+        def _draw_mesh(self, gl, mvp_matrix: QMatrix4x4) -> None:
+            if self._mesh_program is None or self._mesh_vertex_buffer is None:
+                return
+            if self._show_mesh:
+                triangle_count = (
+                    self._mesh_interactive_triangle_count
+                    if self._interactive_preview
+                    else self._mesh_triangle_count
+                )
+                index_buffer = (
+                    self._mesh_interactive_index_buffer
+                    if self._interactive_preview
+                    else self._mesh_index_buffer
+                )
+                if triangle_count and index_buffer is not None:
+                    self._mesh_program.bind()
+                    self._mesh_program.setUniformValue("u_mvp_matrix", mvp_matrix)
+                    self._mesh_program.setUniformValue(
+                        "u_light_direction", QVector3D(0.35, -0.28, 0.89)
+                    )
+                    fill = QColor(self._mesh_fill)
+                    fill.setAlpha(232 if not self._show_wireframe else 216)
+                    self._mesh_program.setUniformValue(
+                        "u_base_color",
+                        QVector4D(
+                            fill.redF(),
+                            fill.greenF(),
+                            fill.blueF(),
+                            fill.alphaF(),
+                        ),
+                    )
+                    self._mesh_vertex_buffer.bind()
+                    self._mesh_program.enableAttributeArray(0)
+                    self._mesh_program.setAttributeBuffer(0, GL_FLOAT, 0, 3, 24)
+                    self._mesh_program.enableAttributeArray(1)
+                    self._mesh_program.setAttributeBuffer(1, GL_FLOAT, 12, 3, 24)
+                    index_buffer.bind()
+                    gl.glDrawElements(GL_TRIANGLES, triangle_count, GL_UNSIGNED_INT, None)
+                    index_buffer.release()
+                    self._mesh_vertex_buffer.release()
+                    self._mesh_program.disableAttributeArray(0)
+                    self._mesh_program.disableAttributeArray(1)
+                    self._mesh_program.release()
+
+            if (
+                self._show_wireframe
+                and not self._interactive_preview
+                and self._line_program is not None
+                and self._mesh_vertex_buffer is not None
+            ):
+                wire_count = (
+                    self._mesh_interactive_wire_count
+                    if self._interactive_preview
+                    else self._mesh_wire_count
+                )
+                wire_buffer = (
+                    self._mesh_interactive_wire_index_buffer
+                    if self._interactive_preview
+                    else self._mesh_wire_index_buffer
+                )
+                if wire_count and wire_buffer is not None:
+                    self._line_program.bind()
+                    self._line_program.setUniformValue("u_mvp_matrix", mvp_matrix)
+                    self._line_program.setUniformValue(
+                        "u_base_color",
+                        QVector4D(
+                            self._mesh_wire.redF(),
+                            self._mesh_wire.greenF(),
+                            self._mesh_wire.blueF(),
+                            0.92,
+                        ),
+                    )
+                    self._mesh_vertex_buffer.bind()
+                    self._line_program.enableAttributeArray(0)
+                    self._line_program.setAttributeBuffer(0, GL_FLOAT, 0, 3, 24)
+                    wire_buffer.bind()
+                    gl.glDrawElements(GL_LINES, wire_count, GL_UNSIGNED_INT, None)
+                    wire_buffer.release()
+                    self._mesh_vertex_buffer.release()
+                    self._line_program.disableAttributeArray(0)
+                    self._line_program.release()
+
+        def _draw_overlays(self, gl, mvp_matrix: QMatrix4x4) -> None:
+            if (
+                self._interactive_preview
+                or self._line_program is None
+                or self._section_vertex_buffer is None
+                or not self._section_ranges
+            ):
+                return
+            self._line_program.bind()
+            self._line_program.setUniformValue("u_mvp_matrix", mvp_matrix)
+            self._line_program.setUniformValue(
+                "u_base_color",
+                QVector4D(
+                    self._section_color.redF(),
+                    self._section_color.greenF(),
+                    self._section_color.blueF(),
+                    0.88,
+                ),
+            )
+            self._section_vertex_buffer.bind()
+            self._line_program.enableAttributeArray(0)
+            self._line_program.setAttributeBuffer(0, GL_FLOAT, 0, 3, 0)
+            for offset, count in self._section_ranges:
+                gl.glDrawArrays(GL_LINE_STRIP, offset, count)
+            self._section_vertex_buffer.release()
+            self._line_program.disableAttributeArray(0)
+            self._line_program.release()
+
+        def _begin_interaction(self) -> None:
+            self._interactive_preview = True
+            self._interaction_timer.start()
+
+        def _settle_interaction(self) -> None:
+            if not self._interactive_preview:
+                return
+            self._interactive_preview = False
+            self.update()
+
+        def _fit_to_mesh(self) -> None:
+            if self._preview_result is None or not self._preview_result.mesh.vertices:
+                self._center = (0.0, 0.0, 0.0)
+                self._distance = 4.0
+                self._bounds_extent = 2.0
+                return
+            bounds_min = self._preview_result.model_metadata.bounds_min
+            bounds_max = self._preview_result.model_metadata.bounds_max
+            if len(bounds_min) == 3 and len(bounds_max) == 3:
+                min_x, min_y, min_z = bounds_min
+                max_x, max_y, max_z = bounds_max
+            else:
+                vertices = self._preview_result.mesh.vertices
+                xs = [point[0] for point in vertices]
+                ys = [point[1] for point in vertices]
+                zs = [point[2] for point in vertices]
+                min_x, max_x = min(xs), max(xs)
+                min_y, max_y = min(ys), max(ys)
+                min_z, max_z = min(zs), max(zs)
+            self._center = (
+                (min_x + max_x) * 0.5,
+                (min_y + max_y) * 0.5,
+                (min_z + max_z) * 0.5,
+            )
+            self._bounds_extent = max(
+                max_x - min_x,
+                max_y - min_y,
+                max_z - min_z,
+                1.0,
+            )
+            self._distance = self._bounds_extent * 2.2
+
+        def _build_projection(self):
+            yaw_rad = math.radians(self._yaw)
+            pitch_rad = math.radians(self._pitch)
+            eye = (
+                self._center[0] + self._distance * math.cos(pitch_rad) * math.cos(yaw_rad),
+                self._center[1] + self._distance * math.cos(pitch_rad) * math.sin(yaw_rad),
+                self._center[2] + self._distance * math.sin(pitch_rad),
+            )
+            forward = _normalize(
+                (
+                    self._center[0] - eye[0],
+                    self._center[1] - eye[1],
+                    self._center[2] - eye[2],
+                )
+            )
+            world_up = (0.0, 0.0, 1.0)
+            if abs(_dot(forward, world_up)) > 0.98:
+                world_up = (0.0, 1.0, 0.0)
+            right = _normalize(_cross(forward, world_up))
+            up = _normalize(_cross(right, forward))
+            return eye, forward, right, up
+
+        def _build_mvp_matrix(self) -> QMatrix4x4:
+            eye, _forward, _right, up = self._build_projection()
+            view = QMatrix4x4()
+            view.lookAt(
+                QVector3D(*eye),
+                QVector3D(*self._center),
+                QVector3D(*up),
+            )
+            projection = QMatrix4x4()
+            aspect = max(1.0, self.width()) / max(1.0, self.height())
+            near_plane = max(self._bounds_extent * 0.02, 0.1)
+            far_plane = max(self._distance + self._bounds_extent * 6.0, near_plane + 10.0)
+            projection.perspective(46.0, aspect, near_plane, far_plane)
+            return projection * view
+else:  # pragma: no cover - depends on Qt installation
+    class _OpenGLPropellerViewportWidget(QWidget):
+        def __init__(self, parent: QWidget | None = None) -> None:
+            super().__init__(parent)
+            raise RuntimeError("Qt OpenGL modules are unavailable.")
+
+
+class PropellerViewportWidget(QWidget):
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setObjectName("PropellerViewportHost")
+        self.setMinimumWidth(320)
+        self.setMinimumHeight(320)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        if _should_use_opengl_viewport():
+            try:
+                self._canvas: QWidget = _OpenGLPropellerViewportWidget(self)
+            except Exception:
+                self._canvas = _SoftwarePropellerViewportWidget(self)
+        else:
+            self._canvas = _SoftwarePropellerViewportWidget(self)
+        layout.addWidget(self._canvas)
+
+    def set_preview_result(self, result: PropellerPreviewResult | None) -> None:
+        self._canvas.set_preview_result(result)  # type: ignore[attr-defined]
+
+    def mesh_face_count(self) -> int:
+        return self._canvas.mesh_face_count()  # type: ignore[attr-defined]
+
+    def set_preview_options(self, show_mesh: bool, show_wireframe: bool) -> None:
+        self._canvas.set_preview_options(show_mesh, show_wireframe)  # type: ignore[attr-defined]
+
+    def reset_view(self) -> None:
+        self._canvas.reset_view()  # type: ignore[attr-defined]
+
+    def apply_theme(self, colors: dict[str, str]) -> None:
+        self._canvas.apply_theme(colors)  # type: ignore[attr-defined]
+
+
 class AdvancedPropellerWorkspace(QWidget):
     status_message = pyqtSignal(str)
 
@@ -886,7 +1570,6 @@ class AdvancedPropellerWorkspace(QWidget):
                 self._session.feature_state.preview_settings.show_mesh,
                 self._session.feature_state.preview_settings.show_wireframe,
             )
-            self.viewport.update()
             return True
         if action_name == "Toggle Sections":
             self._session.feature_state.preview_settings.show_sections = not self._session.feature_state.preview_settings.show_sections
@@ -1267,8 +1950,6 @@ class AdvancedPropellerWorkspace(QWidget):
         if rebuild:
             self._session.feature_state.mark_dirty_from_stage("blade_preview")
             self._request_build(force_all=False)
-        else:
-            self.viewport.update()
 
     def _on_distribution_changed(self, _distribution_key: str, stage: str) -> None:
         self._session.feature_state.mark_dirty_from_stage(stage)
