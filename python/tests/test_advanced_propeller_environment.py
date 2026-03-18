@@ -4,7 +4,7 @@ import math
 
 import pytest
 from PyQt6.QtCore import QPoint, QPointF, Qt
-from PyQt6.QtGui import QPolygonF
+from PyQt6.QtGui import QColor, QPolygonF
 
 import rotorlab_app.services.propeller_preview_bridge as bridge_module
 import rotorlab_app.ui.advanced_propeller as advanced_propeller_module
@@ -21,14 +21,22 @@ from rotorlab_app.ui.advanced_propeller import (
     _OVERLAY_DEPTH_BIAS,
     _OVERLAY_PASS_CONFIG,
     _SURFACE_PASS_CONFIG,
+    _VIEWPORT_CUBE_BEVEL_HEX,
+    _VIEWPORT_CUBE_FACE_HEX,
     _VIEWPORT_BACKGROUND_HEX,
     _VIEWPORT_SURFACE_HEX,
+    _VIEW_CUBE_PADDING,
+    _VIEW_CUBE_ICON_DIR,
+    _VIEW_CUBE_LABEL_TEXTURE_SIZE,
+    _VIEW_CUBE_WIDGET_HEIGHT,
+    _VIEW_CUBE_WIDGET_WIDTH,
     _build_display_edges,
     _build_view_cube_overlay,
     _camera_state,
     _build_crease_aware_render_geometry,
     _hit_test_view_cube_overlay,
     _named_view_eye_direction,
+    _view_cube_label_image,
     _view_cube_label_transform,
 )
 from rotorlab_app.ui.main_window import RotorLabMainWindow
@@ -201,6 +209,10 @@ def test_view_cube_overlay_exposes_visible_faces_and_hit_targets():
     )
     visible_faces = {face.view_name for face in overlay.faces}
     assert {"Top", "Front", "Right"}.issubset(visible_faces)
+    assert {panel.view_name for panel in overlay.edge_panels} >= {"Top-Front", "Top-Right", "Front-Right"}
+    visible_corners = {panel.view_name for panel in overlay.corner_panels}
+    assert "Top-Front-Right" in visible_corners
+    assert len(visible_corners) > 1
 
     top_face = next(face for face in overlay.faces if face.view_name == "Top")
     centroid = (
@@ -209,6 +221,7 @@ def test_view_cube_overlay_exposes_visible_faces_and_hit_targets():
     )
     target = _hit_test_view_cube_overlay(overlay, centroid)
     assert target is not None
+    assert target.action == "snap"
     assert target.view_name == "Top"
 
 
@@ -219,6 +232,31 @@ def test_view_cube_hit_test_ignores_points_outside_overlay():
         700.0,
     )
     assert _hit_test_view_cube_overlay(overlay, (24.0, 24.0)) is None
+
+
+def test_view_cube_edge_and_corner_hotspots_resolve_expected_named_views():
+    overlay = _build_view_cube_overlay(
+        _camera_state((0.0, 0.0, 0.0), 4.0, -45.0, 35.26438968),
+        900.0,
+        700.0,
+    )
+    edge_panel = next(panel for panel in overlay.edge_panels if panel.view_name == "Top-Front")
+    edge_center = (
+        sum(point[0] for point in edge_panel.polygon) / len(edge_panel.polygon),
+        sum(point[1] for point in edge_panel.polygon) / len(edge_panel.polygon),
+    )
+    edge_target = _hit_test_view_cube_overlay(overlay, edge_center)
+    assert edge_target is not None
+    assert edge_target.view_name == "Top-Front"
+
+    corner_panel = next(panel for panel in overlay.corner_panels if panel.view_name == "Top-Front-Right")
+    corner_center = (
+        sum(point[0] for point in corner_panel.polygon) / len(corner_panel.polygon),
+        sum(point[1] for point in corner_panel.polygon) / len(corner_panel.polygon),
+    )
+    corner_target = _hit_test_view_cube_overlay(overlay, corner_center)
+    assert corner_target is not None
+    assert corner_target.view_name == "Top-Front-Right"
 
 
 def test_view_cube_label_transform_maps_text_center_inside_face_polygon():
@@ -260,6 +298,32 @@ def test_view_cube_label_transform_stays_on_face_across_multiple_orientations():
                 assert polygon.containsPoint(transform.map(sample), Qt.FillRule.WindingFill)
 
 
+def test_view_cube_default_label_quads_have_readable_screen_extent():
+    overlay = _build_view_cube_overlay(
+        _camera_state((0.0, 0.0, 0.0), 4.0, -45.0, 35.26438968),
+        900.0,
+        700.0,
+    )
+    top_face = next(face for face in overlay.faces if face.view_name == "Top")
+    front_face = next(face for face in overlay.faces if face.view_name == "Front")
+
+    top_width = max(point[0] for point in top_face.label_quad) - min(point[0] for point in top_face.label_quad)
+    top_height = max(point[1] for point in top_face.label_quad) - min(point[1] for point in top_face.label_quad)
+    front_width = max(point[0] for point in front_face.label_quad) - min(point[0] for point in front_face.label_quad)
+    front_height = max(point[1] for point in front_face.label_quad) - min(point[1] for point in front_face.label_quad)
+
+    assert top_width > 23.0
+    assert top_height > 10.0
+    assert front_width > 15.0
+    assert front_height > 18.0
+
+
+def test_view_cube_label_images_render_at_supersampled_resolution():
+    image = _view_cube_label_image("TOP", "Segoe UI")
+    assert image.width() == _VIEW_CUBE_LABEL_TEXTURE_SIZE
+    assert image.height() == _VIEW_CUBE_LABEL_TEXTURE_SIZE
+
+
 def test_view_cube_projection_stays_within_overlay_bounds_across_orientations():
     for view_name in (
         "Top-Front-Right",
@@ -280,13 +344,95 @@ def test_view_cube_projection_stays_within_overlay_bounds_across_orientations():
             900.0,
             700.0,
         )
-        xs = [point[0] for face in overlay.faces for point in face.polygon]
-        ys = [point[1] for face in overlay.faces for point in face.polygon]
+        polygons = (
+            [face.polygon for face in overlay.faces]
+            + [panel.polygon for panel in overlay.edge_panels]
+            + [panel.polygon for panel in overlay.corner_panels]
+            + [control.polygon for control in overlay.controls]
+        )
+        xs = [point[0] for polygon in polygons for point in polygon]
+        ys = [point[1] for polygon in polygons for point in polygon]
 
         assert xs
         assert ys
-        assert max(xs) - min(xs) <= 84.0 + 1e-6
-        assert max(ys) - min(ys) <= 84.0 + 1e-6
+        assert max(xs) - min(xs) <= _VIEW_CUBE_WIDGET_WIDTH + 1.0
+        assert max(ys) - min(ys) <= _VIEW_CUBE_WIDGET_HEIGHT + 1.0
+        assert min(xs) >= 900.0 - _VIEW_CUBE_PADDING - _VIEW_CUBE_WIDGET_WIDTH - 1.0
+        assert max(xs) <= 900.0 - _VIEW_CUBE_PADDING + 1.0
+        assert min(ys) >= _VIEW_CUBE_PADDING - 1.0
+        assert max(ys) <= _VIEW_CUBE_PADDING + _VIEW_CUBE_WIDGET_HEIGHT + 1.0
+
+
+def test_view_cube_labels_are_uppercase_and_bevels_are_darker_than_faces():
+    overlay = _build_view_cube_overlay(
+        _camera_state((0.0, 0.0, 0.0), 4.0, -45.0, 35.26438968),
+        900.0,
+        700.0,
+    )
+    assert overlay.faces
+    assert all(face.label.isupper() for face in overlay.faces)
+    assert QColor(_VIEWPORT_CUBE_BEVEL_HEX).lightnessF() < QColor(_VIEWPORT_CUBE_FACE_HEX).lightnessF()
+
+
+def test_top_roll_icon_clears_the_top_rotate_arrow():
+    overlay = _build_view_cube_overlay(
+        _camera_state((0.0, 0.0, 0.0), 4.0, -45.0, 35.26438968),
+        900.0,
+        700.0,
+    )
+    rotate_up = next(control for control in overlay.controls if control.kind == "rotate_up")
+    top_roll = next(control for control in overlay.controls if control.kind == "roll_left")
+
+    rotate_bounds = QPolygonF(QPointF(point[0], point[1]) for point in rotate_up.polygon).boundingRect()
+    roll_bounds = QPolygonF(QPointF(point[0], point[1]) for point in top_roll.polygon).boundingRect()
+
+    assert not rotate_bounds.intersects(roll_bounds)
+
+
+def test_view_cube_home_and_roll_controls_anchor_to_requested_widget_corners():
+    overlay = _build_view_cube_overlay(
+        _camera_state((0.0, 0.0, 0.0), 4.0, -45.0, 35.26438968),
+        900.0,
+        700.0,
+    )
+    cube_points = [
+        point
+        for polygon in [face.polygon for face in overlay.faces]
+        + [panel.polygon for panel in overlay.edge_panels]
+        + [panel.polygon for panel in overlay.corner_panels]
+        for point in polygon
+    ]
+    cube_min_x = min(point[0] for point in cube_points)
+    cube_max_x = max(point[0] for point in cube_points)
+    cube_mid_y = (min(point[1] for point in cube_points) + max(point[1] for point in cube_points)) * 0.5
+
+    home = next(control for control in overlay.controls if control.kind == "home")
+    roll_left = next(control for control in overlay.controls if control.kind == "roll_left")
+    roll_right = next(control for control in overlay.controls if control.kind == "roll_right")
+
+    home_center = (
+        sum(point[0] for point in home.polygon) / len(home.polygon),
+        sum(point[1] for point in home.polygon) / len(home.polygon),
+    )
+    left_roll_center = (
+        sum(point[0] for point in roll_left.polygon) / len(roll_left.polygon),
+        sum(point[1] for point in roll_left.polygon) / len(roll_left.polygon),
+    )
+    right_roll_center = (
+        sum(point[0] for point in roll_right.polygon) / len(roll_right.polygon),
+        sum(point[1] for point in roll_right.polygon) / len(roll_right.polygon),
+    )
+
+    assert home_center[0] > cube_max_x
+    assert home_center[1] > cube_mid_y
+    assert left_roll_center[0] < cube_min_x
+    assert left_roll_center[1] < cube_mid_y
+    assert right_roll_center[0] > cube_max_x
+    assert right_roll_center[1] < cube_mid_y
+
+
+def test_view_cube_icon_slot_directory_exists():
+    assert (_VIEW_CUBE_ICON_DIR / "README.md").exists()
 
 
 def test_crease_aware_render_geometry_keeps_coplanar_faces_smooth():
@@ -423,6 +569,79 @@ def test_software_viewport_cube_click_snaps_without_entering_drag(window, qtbot)
     assert canvas._pitch == pytest.approx(90.0)
 
 
+def test_view_cube_home_control_restores_default_iso(window, qtbot):
+    node_id = _drop_propeller_module(window)
+    assert window.orchestrate.scene.activate_node(node_id)
+    qtbot.wait(200)
+
+    workspace = window.workspace_stack.currentWidget()
+    assert isinstance(workspace, AdvancedPropellerWorkspace)
+    _wait_for_result(qtbot, workspace)
+
+    canvas = workspace.viewport._canvas
+    workspace.viewport.snap_to_named_view("Front")
+    overlay = canvas._view_cube_overlay()
+    home_hotspot = next(hotspot for hotspot in overlay.hotspots if hotspot.action == "home")
+    centroid = (
+        sum(point[0] for point in home_hotspot.polygon) / len(home_hotspot.polygon),
+        sum(point[1] for point in home_hotspot.polygon) / len(home_hotspot.polygon),
+    )
+    qtbot.mouseClick(
+        canvas,
+        Qt.MouseButton.LeftButton,
+        pos=QPoint(round(centroid[0]), round(centroid[1])),
+    )
+
+    assert canvas._drag_mode is None
+    assert canvas._yaw == pytest.approx(-45.0)
+    assert canvas._pitch == pytest.approx(35.26438968)
+    assert canvas._roll == pytest.approx(0.0)
+
+
+def test_view_cube_rotate_and_roll_controls_update_camera_without_drag(window, qtbot):
+    node_id = _drop_propeller_module(window)
+    assert window.orchestrate.scene.activate_node(node_id)
+    qtbot.wait(200)
+
+    workspace = window.workspace_stack.currentWidget()
+    assert isinstance(workspace, AdvancedPropellerWorkspace)
+    _wait_for_result(qtbot, workspace)
+
+    canvas = workspace.viewport._canvas
+    initial_angles = (canvas._yaw, canvas._pitch, canvas._roll)
+
+    overlay = canvas._view_cube_overlay()
+    rotate_hotspot = next(hotspot for hotspot in overlay.hotspots if hotspot.action == "rotate")
+    rotate_center = (
+        sum(point[0] for point in rotate_hotspot.polygon) / len(rotate_hotspot.polygon),
+        sum(point[1] for point in rotate_hotspot.polygon) / len(rotate_hotspot.polygon),
+    )
+    qtbot.mouseClick(
+        canvas,
+        Qt.MouseButton.LeftButton,
+        pos=QPoint(round(rotate_center[0]), round(rotate_center[1])),
+    )
+
+    after_rotate = (canvas._yaw, canvas._pitch, canvas._roll)
+    assert canvas._drag_mode is None
+    assert any(abs(after - before) > 1e-3 for after, before in zip(after_rotate, initial_angles))
+
+    overlay = canvas._view_cube_overlay()
+    roll_hotspot = next(hotspot for hotspot in overlay.hotspots if hotspot.action == "roll")
+    roll_center = (
+        sum(point[0] for point in roll_hotspot.polygon) / len(roll_hotspot.polygon),
+        sum(point[1] for point in roll_hotspot.polygon) / len(roll_hotspot.polygon),
+    )
+    qtbot.mouseClick(
+        canvas,
+        Qt.MouseButton.LeftButton,
+        pos=QPoint(round(roll_center[0]), round(roll_center[1])),
+    )
+
+    assert canvas._drag_mode is None
+    assert abs(canvas._roll) > 1.0
+
+
 def test_reset_view_restores_default_iso_after_named_view_snap(window, qtbot):
     node_id = _drop_propeller_module(window)
     assert window.orchestrate.scene.activate_node(node_id)
@@ -438,6 +657,7 @@ def test_reset_view_restores_default_iso_after_named_view_snap(window, qtbot):
 
     assert canvas._yaw == pytest.approx(-45.0)
     assert canvas._pitch == pytest.approx(35.26438968)
+    assert canvas._roll == pytest.approx(0.0)
 
 
 def test_viewport_uses_cad_palette_instead_of_app_accent(window, qtbot):

@@ -5,9 +5,11 @@ import os
 from array import array
 from collections import defaultdict
 from dataclasses import dataclass
+from functools import lru_cache
+from pathlib import Path
 
-from PyQt6.QtCore import QPoint, QPointF, Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QColor, QMatrix4x4, QPainter, QPainterPath, QPen, QPolygonF, QTransform, QVector3D, QVector4D
+from PyQt6.QtCore import QPoint, QPointF, QRectF, Qt, QTimer, pyqtSignal
+from PyQt6.QtGui import QColor, QFont, QImage, QMatrix4x4, QPainter, QPainterPath, QPen, QPixmap, QPolygonF, QTransform, QVector3D, QVector4D
 from PyQt6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -52,6 +54,14 @@ except ImportError:  # pragma: no cover - depends on Qt installation
     QOpenGLVersionProfile = None  # type: ignore[assignment]
     QOpenGLWidget = None  # type: ignore[assignment]
     _HAS_QT_OPENGL = False
+
+try:
+    from PyQt6.QtSvg import QSvgRenderer
+
+    _HAS_QT_SVG = True
+except ImportError:  # pragma: no cover - depends on Qt installation
+    QSvgRenderer = None  # type: ignore[assignment]
+    _HAS_QT_SVG = False
 
 from rotorlab_app.models.propeller import (
     ACTIVE_PROPELLER_STAGES,
@@ -132,18 +142,54 @@ class _ViewCubeFaceOverlay:
 
 
 @dataclass(frozen=True)
-class _ViewCubeHotspot:
+class _ViewCubePanelOverlay:
     kind: str
     view_name: str
-    polygon: tuple[tuple[float, float], ...] = ()
-    point: tuple[float, float] | None = None
-    segment: tuple[tuple[float, float], tuple[float, float]] | None = None
+    polygon: tuple[tuple[float, float], ...]
+    brightness: float
+    depth: float
+
+
+@dataclass(frozen=True)
+class _ViewCubeControlOverlay:
+    kind: str
+    polygon: tuple[tuple[float, float], ...]
+
+
+@dataclass(frozen=True)
+class _ViewCubeHotspot:
+    kind: str
+    action: str
+    polygon: tuple[tuple[float, float], ...]
+    view_name: str | None = None
+    axis: str | None = None
+    degrees: float = 0.0
 
 
 @dataclass(frozen=True)
 class _ViewCubeOverlay:
     faces: tuple[_ViewCubeFaceOverlay, ...]
+    edge_panels: tuple[_ViewCubePanelOverlay, ...]
+    corner_panels: tuple[_ViewCubePanelOverlay, ...]
+    controls: tuple[_ViewCubeControlOverlay, ...]
     hotspots: tuple[_ViewCubeHotspot, ...]
+
+
+@dataclass(frozen=True)
+class _ViewCubeFaceDefinition:
+    view_name: str
+    normal: tuple[float, float, float]
+    u_axis: tuple[float, float, float]
+    v_axis: tuple[float, float, float]
+
+
+@dataclass(frozen=True)
+class _ViewCubeBodyPanel3D:
+    kind: str
+    view_name: str
+    points: tuple[tuple[float, float, float], ...]
+    normal: tuple[float, float, float]
+    label_quad: tuple[tuple[float, float, float], ...] | None = None
 
 
 _CREASE_ANGLE_DEGREES = 45.0
@@ -165,9 +211,14 @@ _VIEWPORT_BACKGROUND_HEX = "#394454"
 _VIEWPORT_SURFACE_HEX = "#d9d7d4"
 _VIEWPORT_DISPLAY_EDGE_HEX = "#6c737d"
 _VIEWPORT_WIREFRAME_HEX = "#8eb4dc"
-_VIEWPORT_CUBE_FACE_HEX = "#d7d7d8"
-_VIEWPORT_CUBE_EDGE_HEX = "#7e848c"
-_VIEWPORT_CUBE_TEXT_HEX = "#5f6670"
+_VIEWPORT_CUBE_FACE_HEX = "#d9d9d8"
+_VIEWPORT_CUBE_BEVEL_HEX = "#c9c9c7"
+_VIEWPORT_CUBE_CORNER_HEX = "#bdbdbb"
+_VIEWPORT_CUBE_EDGE_HEX = "#7c8086"
+_VIEWPORT_CUBE_TEXT_HEX = "#44484f"
+_VIEWPORT_CUBE_CONTROL_HEX = "#d6d6d5"
+_VIEWPORT_CUBE_CONTROL_EDGE_HEX = "#6f747b"
+_VIEWPORT_CUBE_CONTROL_ICON_HEX = "#535860"
 _VIEWPORT_TRIAD_X_HEX = "#d94343"
 _VIEWPORT_TRIAD_Y_HEX = "#33b146"
 _VIEWPORT_TRIAD_Z_HEX = "#3a64ff"
@@ -177,18 +228,30 @@ _VIEWPORT_LIGHT_DIFFUSE = 0.12
 _TRIAD_SIZE = 46.0
 _TRIAD_PADDING = 18.0
 _TRIAD_ARROW_SIZE = 6.0
-_VIEW_CUBE_SIZE = 84.0
+_VIEW_CUBE_SIZE = 94.0
 _VIEW_CUBE_PADDING = 18.0
+_VIEW_CUBE_WIDGET_WIDTH = 150.0
+_VIEW_CUBE_WIDGET_HEIGHT = 150.0
+_VIEW_CUBE_WIDGET_INSET_X = 66.0
+_VIEW_CUBE_WIDGET_INSET_Y = 75.0
+_VIEW_CUBE_CHAMFER_RATIO = 0.23
 _VIEW_CUBE_CORNER_RADIUS = 9.0
 _VIEW_CUBE_EDGE_RADIUS = 7.0
 _VIEW_CUBE_FOV_DEGREES = 28.0
 _VIEW_CUBE_CAMERA_DISTANCE = 6.2
 _VIEW_CUBE_FIT_FRACTION = 0.84
-_VIEW_CUBE_LABEL_MARGIN = 0.18
-_VIEW_CUBE_LABEL_HEIGHT = 0.26
-_VIEW_CUBE_LABEL_PIXEL_SIZE = 96
+_VIEW_CUBE_CONTROL_SIZE = 15.0
+_VIEW_CUBE_CONTROL_GAP = 7.0
+_VIEW_CUBE_HOME_SIZE = 18.0
+_VIEW_CUBE_ROLL_WIDTH = 22.0
+_VIEW_CUBE_ROLL_HEIGHT = 14.0
+_VIEW_CUBE_LABEL_MARGIN = 0.07
+_VIEW_CUBE_LABEL_HEIGHT = 0.40
+_VIEW_CUBE_LABEL_PIXEL_SIZE = 128
+_VIEW_CUBE_LABEL_TEXTURE_SIZE = 512
 _VIEW_CUBE_FACE_ORDER = ("Top", "Bottom", "Front", "Back", "Right", "Left")
 _VIEW_NAME_ORDER = ("Top", "Bottom", "Front", "Back", "Right", "Left")
+_VIEW_CUBE_ICON_DIR = Path(__file__).with_name("assets") / "view_cube"
 _DEFAULT_ISO_COMPONENT = 1.0 / math.sqrt(3.0)
 _DEFAULT_ISO_DIRECTION = (_DEFAULT_ISO_COMPONENT, -_DEFAULT_ISO_COMPONENT, _DEFAULT_ISO_COMPONENT)
 _DEFAULT_ISO_YAW = math.degrees(math.atan2(_DEFAULT_ISO_DIRECTION[1], _DEFAULT_ISO_DIRECTION[0]))
@@ -211,36 +274,52 @@ _VIEW_CUBE_VERTICES: tuple[tuple[float, float, float], ...] = (
     (1.0, 1.0, 1.0),
     (-1.0, 1.0, 1.0),
 )
-_VIEW_CUBE_FACES: tuple[tuple[str, tuple[float, float, float], tuple[int, int, int, int]], ...] = (
-    ("Top", (0.0, 0.0, 1.0), (4, 5, 6, 7)),
-    ("Bottom", (0.0, 0.0, -1.0), (0, 1, 2, 3)),
-    ("Front", (0.0, -1.0, 0.0), (0, 1, 5, 4)),
-    ("Back", (0.0, 1.0, 0.0), (3, 2, 6, 7)),
-    ("Right", (1.0, 0.0, 0.0), (1, 2, 6, 5)),
-    ("Left", (-1.0, 0.0, 0.0), (0, 3, 7, 4)),
+_VIEW_CUBE_FACE_DEFINITIONS: tuple[_ViewCubeFaceDefinition, ...] = (
+    _ViewCubeFaceDefinition(
+        view_name="Top",
+        normal=(0.0, 0.0, 1.0),
+        u_axis=(1.0, 0.0, 0.0),
+        v_axis=(0.0, -1.0, 0.0),
+    ),
+    _ViewCubeFaceDefinition(
+        view_name="Bottom",
+        normal=(0.0, 0.0, -1.0),
+        u_axis=(1.0, 0.0, 0.0),
+        v_axis=(0.0, 1.0, 0.0),
+    ),
+    _ViewCubeFaceDefinition(
+        view_name="Front",
+        normal=(0.0, -1.0, 0.0),
+        u_axis=(1.0, 0.0, 0.0),
+        v_axis=(0.0, 0.0, -1.0),
+    ),
+    _ViewCubeFaceDefinition(
+        view_name="Back",
+        normal=(0.0, 1.0, 0.0),
+        u_axis=(-1.0, 0.0, 0.0),
+        v_axis=(0.0, 0.0, -1.0),
+    ),
+    _ViewCubeFaceDefinition(
+        view_name="Right",
+        normal=(1.0, 0.0, 0.0),
+        u_axis=(0.0, 1.0, 0.0),
+        v_axis=(0.0, 0.0, -1.0),
+    ),
+    _ViewCubeFaceDefinition(
+        view_name="Left",
+        normal=(-1.0, 0.0, 0.0),
+        u_axis=(0.0, -1.0, 0.0),
+        v_axis=(0.0, 0.0, -1.0),
+    ),
 )
-_VIEW_CUBE_LABEL_QUAD_INDICES: dict[str, tuple[int, int, int, int]] = {
-    "Top": (7, 6, 5, 4),
-    "Bottom": (0, 1, 2, 3),
-    "Front": (4, 5, 1, 0),
-    "Back": (6, 7, 3, 2),
-    "Right": (5, 6, 2, 1),
-    "Left": (7, 4, 0, 3),
+_VIEW_CUBE_ARROW_STEPS: dict[str, tuple[str, float]] = {
+    "rotate_left": ("screen_up", 90.0),
+    "rotate_right": ("screen_up", -90.0),
+    "rotate_up": ("screen_right", -90.0),
+    "rotate_down": ("screen_right", 90.0),
+    "roll_left": ("forward", 90.0),
+    "roll_right": ("forward", -90.0),
 }
-_VIEW_CUBE_EDGES: tuple[tuple[int, int], ...] = (
-    (0, 1),
-    (1, 2),
-    (2, 3),
-    (3, 0),
-    (4, 5),
-    (5, 6),
-    (6, 7),
-    (7, 4),
-    (0, 4),
-    (1, 5),
-    (2, 6),
-    (3, 7),
-)
 
 
 def _series_color(index: int) -> QColor:
@@ -307,6 +386,7 @@ def _camera_state(
     distance: float,
     yaw_deg: float,
     pitch_deg: float,
+    roll_deg: float = 0.0,
 ) -> _ViewportCameraState:
     yaw_rad = math.radians(yaw_deg)
     pitch_rad = math.radians(pitch_deg)
@@ -322,6 +402,9 @@ def _camera_state(
         world_up = (0.0, 1.0, 0.0)
     right = _normalize(_cross(forward, world_up))
     up = _normalize(_cross(right, forward))
+    if abs(roll_deg) > 1e-6:
+        right = _normalize(_rotate_vector(right, forward, roll_deg))
+        up = _normalize(_rotate_vector(up, forward, roll_deg))
     return _ViewportCameraState(
         eye=eye,
         eye_direction=_normalize(eye_direction),
@@ -329,6 +412,72 @@ def _camera_state(
         right=right,
         up=up,
     )
+
+
+def _rotate_vector(
+    vector: tuple[float, float, float],
+    axis: tuple[float, float, float],
+    degrees: float,
+) -> tuple[float, float, float]:
+    axis = _normalize(axis)
+    radians = math.radians(degrees)
+    cosine = math.cos(radians)
+    sine = math.sin(radians)
+    cross = _cross(axis, vector)
+    dot = _dot(axis, vector)
+    return (
+        vector[0] * cosine + cross[0] * sine + axis[0] * dot * (1.0 - cosine),
+        vector[1] * cosine + cross[1] * sine + axis[1] * dot * (1.0 - cosine),
+        vector[2] * cosine + cross[2] * sine + axis[2] * dot * (1.0 - cosine),
+    )
+
+
+def _orthonormalize_up(
+    forward: tuple[float, float, float],
+    up: tuple[float, float, float],
+) -> tuple[float, float, float]:
+    candidate = _sub(up, _scale(forward, _dot(up, forward)))
+    if math.sqrt(_dot(candidate, candidate)) <= 1e-6:
+        fallback = (0.0, 0.0, 1.0)
+        if abs(_dot(forward, fallback)) > 0.98:
+            fallback = (0.0, 1.0, 0.0)
+        candidate = _sub(fallback, _scale(forward, _dot(fallback, forward)))
+    return _normalize(candidate)
+
+
+def _camera_angles_from_eye_direction(
+    eye_direction: tuple[float, float, float],
+    up: tuple[float, float, float],
+) -> tuple[float, float, float]:
+    eye_direction = _normalize(eye_direction)
+    yaw = math.degrees(math.atan2(eye_direction[1], eye_direction[0]))
+    pitch = math.degrees(math.asin(max(-1.0, min(1.0, eye_direction[2]))))
+    forward = _normalize(_scale(eye_direction, -1.0))
+    normalized_up = _orthonormalize_up(forward, up)
+    base_camera = _camera_state((0.0, 0.0, 0.0), 1.0, yaw, pitch, 0.0)
+    sine = _dot(_cross(base_camera.up, normalized_up), forward)
+    cosine = _dot(base_camera.up, normalized_up)
+    roll = math.degrees(math.atan2(sine, cosine))
+    return yaw, pitch, roll
+
+
+def _rotate_camera_angles(
+    yaw_deg: float,
+    pitch_deg: float,
+    roll_deg: float,
+    axis_kind: str,
+    degrees: float,
+) -> tuple[float, float, float]:
+    camera = _camera_state((0.0, 0.0, 0.0), 1.0, yaw_deg, pitch_deg, roll_deg)
+    if axis_kind == "screen_up":
+        axis = camera.up
+    elif axis_kind == "screen_right":
+        axis = camera.right
+    else:
+        axis = camera.forward
+    rotated_eye_direction = _rotate_vector(camera.eye_direction, axis, degrees)
+    rotated_up = _rotate_vector(camera.up, axis, degrees)
+    return _camera_angles_from_eye_direction(rotated_eye_direction, rotated_up)
 
 
 def _named_view_eye_direction(view_name: str) -> tuple[float, float, float]:
@@ -460,148 +609,423 @@ def _build_view_cube_overlay(
     size: float = _VIEW_CUBE_SIZE,
     padding: float = _VIEW_CUBE_PADDING,
 ) -> _ViewCubeOverlay:
-    center = (widget_width - padding - size * 0.5, padding + size * 0.5)
-    projected_vertices = _project_view_cube_vertices(camera, center, size)
+    widget_rect = _view_cube_widget_rect(widget_width, widget_height, padding)
+    cube_center = (
+        widget_rect.right() - _VIEW_CUBE_WIDGET_INSET_X,
+        widget_rect.top() + _VIEW_CUBE_WIDGET_INSET_Y,
+    )
+    inset = max(0.05, 1.0 - _VIEW_CUBE_CHAMFER_RATIO)
+    overlay_eye = _scale(camera.eye_direction, _VIEW_CUBE_CAMERA_DISTANCE)
     visible_faces: list[_ViewCubeFaceOverlay] = []
-    visible_vertices: set[int] = set()
-    visible_edges: set[tuple[int, int]] = set()
-
-    for label, normal, indices in _VIEW_CUBE_FACES:
-        if _dot(normal, camera.eye_direction) <= 0.0:
+    edge_panels: list[_ViewCubePanelOverlay] = []
+    corner_panels: list[_ViewCubePanelOverlay] = []
+    hotspots: list[_ViewCubeHotspot] = []
+    for panel in _build_view_cube_body_panels(inset):
+        panel_center = tuple(
+            sum(point[index] for point in panel.points) / len(panel.points)
+            for index in range(3)
+        )
+        view_direction = _normalize(_sub(overlay_eye, panel_center))
+        if _dot(panel.normal, view_direction) <= 1e-5:
             continue
-        polygon = tuple(
-            (projected_vertices[index][0], projected_vertices[index][1]) for index in indices
-        )
-        label_quad_indices = _VIEW_CUBE_LABEL_QUAD_INDICES[label]
-        label_quad = tuple(
-            (projected_vertices[index][0], projected_vertices[index][1])
-            for index in label_quad_indices
-        )
-        brightness = _surface_brightness(normal)
-        depth = sum(projected_vertices[index][2] for index in indices) / len(indices)
-        visible_faces.append(
-            _ViewCubeFaceOverlay(
-                label=label,
-                view_name=label,
+        projected = _project_view_cube_points(panel.points, camera, cube_center, size)
+        depth = sum(point[2] for point in projected) / len(projected)
+        brightness = _surface_brightness(panel.normal)
+        polygon = tuple((point[0], point[1]) for point in projected)
+        if panel.kind == "face":
+            label_quad_3d = panel.label_quad or panel.points
+            projected_label = _project_view_cube_points(label_quad_3d, camera, cube_center, size)
+            face = _ViewCubeFaceOverlay(
+                label=panel.view_name.upper(),
+                view_name=panel.view_name,
                 polygon=polygon,
                 brightness=brightness,
                 depth=depth,
-                label_quad=label_quad,
+                label_quad=tuple((point[0], point[1]) for point in projected_label),
             )
-        )
-        visible_vertices.update(indices)
-        visible_edges.update(
-            {
-                tuple(sorted((indices[0], indices[1]))),
-                tuple(sorted((indices[1], indices[2]))),
-                tuple(sorted((indices[2], indices[3]))),
-                tuple(sorted((indices[3], indices[0]))),
-            }
-        )
-
-    visible_faces.sort(key=lambda face: face.depth)
-    hotspots: list[_ViewCubeHotspot] = []
-
-    for vertex_index in sorted(visible_vertices):
-        point = _VIEW_CUBE_VERTICES[vertex_index]
-        hotspots.append(
-            _ViewCubeHotspot(
-                kind="corner",
-                view_name=_view_name_from_points((point,)),
-                point=(
-                    projected_vertices[vertex_index][0],
-                    projected_vertices[vertex_index][1],
-                ),
+            visible_faces.append(face)
+            hotspots.append(
+                _ViewCubeHotspot(
+                    kind="face",
+                    action="snap",
+                    view_name=panel.view_name,
+                    polygon=polygon,
+                )
             )
-        )
-
-    for start, end in sorted(visible_edges):
-        edge_points = (_VIEW_CUBE_VERTICES[start], _VIEW_CUBE_VERTICES[end])
-        hotspots.append(
-            _ViewCubeHotspot(
+        elif panel.kind == "edge":
+            edge_panel = _ViewCubePanelOverlay(
                 kind="edge",
-                view_name=_view_name_from_points(edge_points),
-                segment=(
-                    (projected_vertices[start][0], projected_vertices[start][1]),
-                    (projected_vertices[end][0], projected_vertices[end][1]),
-                ),
+                view_name=panel.view_name,
+                polygon=polygon,
+                brightness=brightness,
+                depth=depth,
             )
-        )
-
-    for face in visible_faces:
-        hotspots.append(
-            _ViewCubeHotspot(
-                kind="face",
-                view_name=face.view_name,
-                polygon=face.polygon,
+            edge_panels.append(edge_panel)
+            hotspots.append(
+                _ViewCubeHotspot(
+                    kind="edge",
+                    action="snap",
+                    view_name=panel.view_name,
+                    polygon=polygon,
+                )
             )
-        )
+        else:
+            corner_panel = _ViewCubePanelOverlay(
+                kind="corner",
+                view_name=panel.view_name,
+                polygon=polygon,
+                brightness=brightness,
+                depth=depth,
+            )
+            corner_panels.append(corner_panel)
+            hotspots.append(
+                _ViewCubeHotspot(
+                    kind="corner",
+                    action="snap",
+                    view_name=panel.view_name,
+                    polygon=polygon,
+                )
+            )
 
-    return _ViewCubeOverlay(faces=tuple(visible_faces), hotspots=tuple(hotspots))
+    visible_faces.sort(key=lambda face: face.depth, reverse=True)
+    edge_panels.sort(key=lambda panel: panel.depth)
+    corner_panels.sort(key=lambda panel: panel.depth)
+    controls, control_hotspots = _build_view_cube_controls(widget_rect, cube_center, size)
+    hotspots.extend(control_hotspots)
+    return _ViewCubeOverlay(
+        faces=tuple(visible_faces),
+        edge_panels=tuple(edge_panels),
+        corner_panels=tuple(corner_panels),
+        controls=controls,
+        hotspots=tuple(hotspots),
+    )
 
 
-def _project_view_cube_vertices(
+def _view_cube_widget_rect(
+    widget_width: float,
+    widget_height: float,
+    padding: float = _VIEW_CUBE_PADDING,
+) -> QRectF:
+    return QRectF(
+        max(0.0, widget_width - _VIEW_CUBE_WIDGET_WIDTH - padding),
+        padding,
+        _VIEW_CUBE_WIDGET_WIDTH,
+        min(_VIEW_CUBE_WIDGET_HEIGHT, max(_VIEW_CUBE_WIDGET_HEIGHT, widget_height - padding * 2.0)),
+    )
+
+
+def _project_view_cube_points(
+    points: tuple[tuple[float, float, float], ...],
     camera: _ViewportCameraState,
     center: tuple[float, float],
     size: float,
-) -> list[tuple[float, float, float]]:
+) -> tuple[tuple[float, float, float], ...]:
     projection_scale = 1.0 / math.tan(math.radians(_VIEW_CUBE_FOV_DEGREES) * 0.5)
-    raw_vertices: list[tuple[float, float, float]] = []
-    min_x = float("inf")
-    max_x = float("-inf")
-    min_y = float("inf")
-    max_y = float("-inf")
-
-    for vertex in _VIEW_CUBE_VERTICES:
-        cam_x = _dot(vertex, camera.right)
-        cam_y = _dot(vertex, camera.up)
-        cam_z = max(0.1, _VIEW_CUBE_CAMERA_DISTANCE - _dot(vertex, camera.eye_direction))
-        projected_x = (cam_x * projection_scale) / cam_z
-        projected_y = (cam_y * projection_scale) / cam_z
-        depth = _dot(vertex, camera.eye_direction)
-        raw_vertices.append((projected_x, projected_y, depth))
-        min_x = min(min_x, projected_x)
-        max_x = max(max_x, projected_x)
-        min_y = min(min_y, projected_y)
-        max_y = max(max_y, projected_y)
-
-    span_x = max_x - min_x
-    span_y = max_y - min_y
-    normalization_span = max(math.hypot(span_x, span_y), 1e-6)
+    max_extent = math.sqrt(3.0)
+    max_projected_extent = (
+        max_extent
+        * projection_scale
+        / max(0.2, _VIEW_CUBE_CAMERA_DISTANCE - max_extent)
+    )
     fit_size = size * _VIEW_CUBE_FIT_FRACTION
-    pixel_scale = fit_size / normalization_span
-    offset_x = (min_x + max_x) * 0.5
-    offset_y = (min_y + max_y) * 0.5
-    return [
-        (
-            center[0] + (projected_x - offset_x) * pixel_scale,
-            center[1] - (projected_y - offset_y) * pixel_scale,
-            depth,
+    pixel_scale = (fit_size * 0.5) / max(max_projected_extent, 1e-6)
+    overlay_eye = _scale(camera.eye_direction, _VIEW_CUBE_CAMERA_DISTANCE)
+    projected_points: list[tuple[float, float, float]] = []
+    for point in points:
+        relative = _sub(point, overlay_eye)
+        cam_x = _dot(relative, camera.right)
+        cam_y = _dot(relative, camera.up)
+        cam_z = max(0.05, _dot(relative, camera.forward))
+        projected_points.append(
+            (
+                center[0] + (cam_x * projection_scale / cam_z) * pixel_scale,
+                center[1] - (cam_y * projection_scale / cam_z) * pixel_scale,
+                cam_z,
+            )
         )
-        for projected_x, projected_y, depth in raw_vertices
-    ]
+    return tuple(projected_points)
+
+
+def _axis_index(vector: tuple[float, float, float]) -> int:
+    return max(range(3), key=lambda index: abs(vector[index]))
+
+
+def _view_cube_face_polygon_3d(
+    definition: _ViewCubeFaceDefinition,
+    inset: float,
+) -> tuple[tuple[float, float, float], ...]:
+    return tuple(
+        _add(
+            definition.normal,
+            _add(
+                _scale(definition.u_axis, u * inset),
+                _scale(definition.v_axis, v * inset),
+            ),
+        )
+        for u, v in ((-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0))
+    )
+
+
+def _view_cube_label_quad_3d(
+    definition: _ViewCubeFaceDefinition,
+    inset: float,
+) -> tuple[tuple[float, float, float], ...]:
+    width = inset * (1.0 - _VIEW_CUBE_LABEL_MARGIN * 2.0)
+    height = inset * _VIEW_CUBE_LABEL_HEIGHT
+    return tuple(
+        _add(
+            definition.normal,
+            _add(
+                _scale(definition.u_axis, u),
+                _scale(definition.v_axis, v),
+            ),
+        )
+        for u, v in (
+            (-width, -height),
+            (width, -height),
+            (width, height),
+            (-width, height),
+        )
+    )
+
+
+def _build_view_cube_body_panels(inset: float) -> tuple[_ViewCubeBodyPanel3D, ...]:
+    panels: list[_ViewCubeBodyPanel3D] = []
+    for definition in _VIEW_CUBE_FACE_DEFINITIONS:
+        panels.append(
+            _ViewCubeBodyPanel3D(
+                kind="face",
+                view_name=definition.view_name,
+                points=_view_cube_face_polygon_3d(definition, inset),
+                normal=definition.normal,
+                label_quad=_view_cube_label_quad_3d(definition, inset),
+            )
+        )
+
+    for y_sign in (-1.0, 1.0):
+        for z_sign in (-1.0, 1.0):
+            panels.append(
+                _ViewCubeBodyPanel3D(
+                    kind="edge",
+                    view_name=_view_name_from_vector((0.0, y_sign, z_sign)),
+                    points=_view_cube_edge_strip_points(1, int(y_sign), 2, int(z_sign), 0, inset),
+                    normal=_normalize((0.0, y_sign, z_sign)),
+                )
+            )
+    for x_sign in (-1.0, 1.0):
+        for z_sign in (-1.0, 1.0):
+            panels.append(
+                _ViewCubeBodyPanel3D(
+                    kind="edge",
+                    view_name=_view_name_from_vector((x_sign, 0.0, z_sign)),
+                    points=_view_cube_edge_strip_points(0, int(x_sign), 2, int(z_sign), 1, inset),
+                    normal=_normalize((x_sign, 0.0, z_sign)),
+                )
+            )
+    for x_sign in (-1.0, 1.0):
+        for y_sign in (-1.0, 1.0):
+            panels.append(
+                _ViewCubeBodyPanel3D(
+                    kind="edge",
+                    view_name=_view_name_from_vector((x_sign, y_sign, 0.0)),
+                    points=_view_cube_edge_strip_points(0, int(x_sign), 1, int(y_sign), 2, inset),
+                    normal=_normalize((x_sign, y_sign, 0.0)),
+                )
+            )
+
+    for x_sign in (-1.0, 1.0):
+        for y_sign in (-1.0, 1.0):
+            for z_sign in (-1.0, 1.0):
+                panels.append(
+                    _ViewCubeBodyPanel3D(
+                        kind="corner",
+                        view_name=_view_name_from_vector((x_sign, y_sign, z_sign)),
+                        points=_view_cube_corner_cap_points(int(x_sign), int(y_sign), int(z_sign), inset),
+                        normal=_normalize((x_sign, y_sign, z_sign)),
+                    )
+                )
+    return tuple(panels)
+
+
+def _view_cube_edge_strip_points(
+    fixed_axis_a: int,
+    sign_a: int,
+    fixed_axis_b: int,
+    sign_b: int,
+    variable_axis: int,
+    inset: float,
+) -> tuple[tuple[float, float, float], ...]:
+    points: list[tuple[float, float, float]] = []
+    for variable in (-inset, inset):
+        coordinates = [0.0, 0.0, 0.0]
+        coordinates[fixed_axis_a] = float(sign_a)
+        coordinates[fixed_axis_b] = sign_b * inset
+        coordinates[variable_axis] = variable
+        points.append((coordinates[0], coordinates[1], coordinates[2]))
+    for variable in (inset, -inset):
+        coordinates = [0.0, 0.0, 0.0]
+        coordinates[fixed_axis_a] = sign_a * inset
+        coordinates[fixed_axis_b] = float(sign_b)
+        coordinates[variable_axis] = variable
+        points.append((coordinates[0], coordinates[1], coordinates[2]))
+    return tuple(points)
+
+
+def _view_cube_corner_cap_points(
+    sign_x: int,
+    sign_y: int,
+    sign_z: int,
+    inset: float,
+) -> tuple[tuple[float, float, float], ...]:
+    return (
+        (float(sign_x), sign_y * inset, sign_z * inset),
+        (sign_x * inset, float(sign_y), sign_z * inset),
+        (sign_x * inset, sign_y * inset, float(sign_z)),
+    )
+
+
+def _triangle_control_polygon(
+    center: tuple[float, float],
+    direction: tuple[float, float],
+    size: float = _VIEW_CUBE_CONTROL_SIZE,
+) -> tuple[tuple[float, float], ...]:
+    unit = _normalize((direction[0], direction[1], 0.0))
+    normal = (-unit[1], unit[0])
+    tip = (center[0] + unit[0] * size * 0.55, center[1] + unit[1] * size * 0.55)
+    base_center = (center[0] - unit[0] * size * 0.35, center[1] - unit[1] * size * 0.35)
+    return (
+        tip,
+        (base_center[0] + normal[0] * size * 0.48, base_center[1] + normal[1] * size * 0.48),
+        (base_center[0] - normal[0] * size * 0.48, base_center[1] - normal[1] * size * 0.48),
+    )
+
+
+def _rounded_rect_polygon(rect: QRectF, radius: float = 5.0) -> tuple[tuple[float, float], ...]:
+    return (
+        (rect.left() + radius, rect.top()),
+        (rect.right() - radius, rect.top()),
+        (rect.right(), rect.top() + radius),
+        (rect.right(), rect.bottom() - radius),
+        (rect.right() - radius, rect.bottom()),
+        (rect.left() + radius, rect.bottom()),
+        (rect.left(), rect.bottom() - radius),
+        (rect.left(), rect.top() + radius),
+    )
+
+
+def _build_view_cube_controls(
+    widget_rect: QRectF,
+    cube_center: tuple[float, float],
+    size: float,
+) -> tuple[tuple[_ViewCubeControlOverlay, ...], tuple[_ViewCubeHotspot, ...]]:
+    half = size * 0.5
+    controls: list[_ViewCubeControlOverlay] = []
+    hotspots: list[_ViewCubeHotspot] = []
+    cardinal_offset = half + max(2.0, _VIEW_CUBE_CONTROL_GAP * 0.45)
+
+    control_specs = (
+        ("rotate_up", _triangle_control_polygon((cube_center[0], cube_center[1] - cardinal_offset), (0.0, -1.0))),
+        ("rotate_down", _triangle_control_polygon((cube_center[0], cube_center[1] + cardinal_offset), (0.0, 1.0))),
+        ("rotate_left", _triangle_control_polygon((cube_center[0] - cardinal_offset, cube_center[1]), (-1.0, 0.0))),
+        ("rotate_right", _triangle_control_polygon((cube_center[0] + cardinal_offset, cube_center[1]), (1.0, 0.0))),
+    )
+    for kind, polygon in control_specs:
+        controls.append(_ViewCubeControlOverlay(kind=kind, polygon=polygon))
+        axis, degrees = _VIEW_CUBE_ARROW_STEPS[kind]
+        hotspots.append(
+            _ViewCubeHotspot(
+                kind="control",
+                action="rotate",
+                polygon=polygon,
+                axis=axis,
+                degrees=degrees,
+            )
+        )
+
+    home_rect = QRectF(
+        cube_center[0] + cardinal_offset - _VIEW_CUBE_HOME_SIZE * 0.5,
+        cube_center[1] + cardinal_offset - _VIEW_CUBE_HOME_SIZE * 0.5,
+        _VIEW_CUBE_HOME_SIZE,
+        _VIEW_CUBE_HOME_SIZE,
+    )
+    home_polygon = _rounded_rect_polygon(home_rect, 4.0)
+    controls.append(_ViewCubeControlOverlay(kind="home", polygon=home_polygon))
+    hotspots.append(
+        _ViewCubeHotspot(
+            kind="control",
+            action="home",
+            polygon=home_polygon,
+        )
+    )
+
+    roll_rects = (
+        (
+            "roll_left",
+            QRectF(
+                cube_center[0] - cardinal_offset - _VIEW_CUBE_ROLL_WIDTH * 0.5,
+                cube_center[1] - cardinal_offset - _VIEW_CUBE_ROLL_HEIGHT * 0.5,
+                _VIEW_CUBE_ROLL_WIDTH,
+                _VIEW_CUBE_ROLL_HEIGHT,
+            ),
+        ),
+        (
+            "roll_right",
+            QRectF(
+                cube_center[0] + cardinal_offset - _VIEW_CUBE_ROLL_WIDTH * 0.5,
+                cube_center[1] - cardinal_offset - _VIEW_CUBE_ROLL_HEIGHT * 0.5,
+                _VIEW_CUBE_ROLL_WIDTH,
+                _VIEW_CUBE_ROLL_HEIGHT,
+            ),
+        ),
+    )
+    for kind, rect in roll_rects:
+        polygon = _rounded_rect_polygon(rect, 6.0)
+        controls.append(_ViewCubeControlOverlay(kind=kind, polygon=polygon))
+        axis, degrees = _VIEW_CUBE_ARROW_STEPS[kind]
+        hotspots.append(
+            _ViewCubeHotspot(
+                kind="control",
+                action="roll",
+                polygon=polygon,
+                axis=axis,
+                degrees=degrees,
+            )
+        )
+    return tuple(controls), tuple(hotspots)
 
 
 def _hit_test_view_cube_overlay(
     overlay: _ViewCubeOverlay,
     point: tuple[float, float],
 ) -> _ViewCubeHotspot | None:
-    for hotspot in overlay.hotspots:
-        if hotspot.kind == "corner" and hotspot.point is not None:
-            if _distance_between_points(point, hotspot.point) <= _VIEW_CUBE_CORNER_RADIUS:
-                return hotspot
-    for hotspot in overlay.hotspots:
-        if hotspot.kind == "edge" and hotspot.segment is not None:
-            if _distance_to_segment(point, hotspot.segment[0], hotspot.segment[1]) <= _VIEW_CUBE_EDGE_RADIUS:
-                return hotspot
-    for hotspot in overlay.hotspots:
-        if hotspot.kind == "face" and hotspot.polygon:
-            if _polygon_from_points(hotspot.polygon).containsPoint(
-                QPointF(point[0], point[1]),
-                Qt.FillRule.WindingFill,
-            ):
-                return hotspot
+    priority = {"control": 0, "corner": 1, "edge": 2, "face": 3}
+    for hotspot in sorted(overlay.hotspots, key=lambda item: priority.get(item.kind, 99)):
+        if hotspot.polygon and _polygon_from_points(hotspot.polygon).containsPoint(
+            QPointF(point[0], point[1]),
+            Qt.FillRule.WindingFill,
+        ):
+            return hotspot
     return None
+
+
+def _apply_view_cube_hotspot(
+    yaw_deg: float,
+    pitch_deg: float,
+    roll_deg: float,
+    hotspot: _ViewCubeHotspot,
+) -> tuple[float, float, float]:
+    if hotspot.action == "home":
+        return _DEFAULT_ISO_YAW, _DEFAULT_ISO_PITCH, 0.0
+    if hotspot.action == "snap" and hotspot.view_name:
+        eye_direction = _named_view_eye_direction(hotspot.view_name)
+        return (
+            math.degrees(math.atan2(eye_direction[1], eye_direction[0])),
+            math.degrees(math.asin(max(-1.0, min(1.0, eye_direction[2])))),
+            0.0,
+        )
+    if hotspot.axis:
+        return _rotate_camera_angles(yaw_deg, pitch_deg, roll_deg, hotspot.axis, hotspot.degrees)
+    return yaw_deg, pitch_deg, roll_deg
 
 
 def _draw_axis_triad_overlay(
@@ -652,14 +1076,30 @@ def _draw_view_cube_overlay(
     painter: QPainter,
     overlay: _ViewCubeOverlay,
 ) -> None:
-    painter.setPen(QPen(QColor(_VIEWPORT_CUBE_EDGE_HEX), 1.0))
-    for face in overlay.faces:
-        fill = _color_with_brightness(QColor(_VIEWPORT_CUBE_FACE_HEX), face.brightness)
-        painter.setBrush(fill)
-        polygon = _polygon_from_points(face.polygon)
-        painter.drawPolygon(polygon)
-        painter.setPen(QPen(QColor(_VIEWPORT_CUBE_EDGE_HEX), 1.0))
-        _draw_view_cube_face_label(painter, face)
+    body_panels: list[tuple[float, str, object]] = []
+    body_panels.extend((panel.depth, "edge", panel) for panel in overlay.edge_panels)
+    body_panels.extend((panel.depth, "corner", panel) for panel in overlay.corner_panels)
+    body_panels.extend((face.depth, "face", face) for face in overlay.faces)
+    body_panels.sort(key=lambda item: item[0], reverse=True)
+
+    painter.setPen(QPen(QColor(_VIEWPORT_CUBE_EDGE_HEX), 0.85))
+    for _depth, kind, panel in body_panels:
+        if kind == "face":
+            assert isinstance(panel, _ViewCubeFaceOverlay)
+            painter.setBrush(_color_with_brightness(QColor(_VIEWPORT_CUBE_FACE_HEX), panel.brightness))
+            painter.drawPolygon(_polygon_from_points(panel.polygon))
+            _draw_view_cube_face_label(painter, panel)
+        elif kind == "edge":
+            assert isinstance(panel, _ViewCubePanelOverlay)
+            painter.setBrush(_color_with_brightness(QColor(_VIEWPORT_CUBE_BEVEL_HEX), panel.brightness))
+            painter.drawPolygon(_polygon_from_points(panel.polygon))
+        else:
+            assert isinstance(panel, _ViewCubePanelOverlay)
+            painter.setBrush(_color_with_brightness(QColor(_VIEWPORT_CUBE_CORNER_HEX), panel.brightness))
+            painter.drawPolygon(_polygon_from_points(panel.polygon))
+
+    for control in overlay.controls:
+        _draw_view_cube_control(painter, control)
 
 
 def _view_cube_label_transform(face: _ViewCubeFaceOverlay) -> QTransform:
@@ -692,6 +1132,7 @@ def _view_cube_label_transform(face: _ViewCubeFaceOverlay) -> QTransform:
 def _view_cube_label_path(face: _ViewCubeFaceOverlay, painter: QPainter) -> QPainterPath:
     font = painter.font()
     font.setPixelSize(_VIEW_CUBE_LABEL_PIXEL_SIZE)
+    font.setWeight(QFont.Weight.Bold)
     base_path = QPainterPath()
     base_path.addText(QPointF(0.0, 0.0), font, face.label)
     bounds = base_path.boundingRect()
@@ -708,20 +1149,233 @@ def _view_cube_label_path(face: _ViewCubeFaceOverlay, painter: QPainter) -> QPai
     return centered.map(base_path)
 
 
+@lru_cache(maxsize=32)
+def _view_cube_label_image(label: str, font_family: str) -> QImage:
+    image = QImage(
+        _VIEW_CUBE_LABEL_TEXTURE_SIZE,
+        _VIEW_CUBE_LABEL_TEXTURE_SIZE,
+        QImage.Format.Format_ARGB32_Premultiplied,
+    )
+    image.fill(Qt.GlobalColor.transparent)
+
+    font = QFont(font_family)
+    font.setPixelSize(int(_VIEW_CUBE_LABEL_TEXTURE_SIZE * 0.56))
+    font.setWeight(QFont.Weight.Bold)
+    base_path = QPainterPath()
+    base_path.addText(QPointF(0.0, 0.0), font, label)
+    bounds = base_path.boundingRect()
+    margin = _VIEW_CUBE_LABEL_TEXTURE_SIZE * 0.08
+    available_width = max(1.0, _VIEW_CUBE_LABEL_TEXTURE_SIZE - margin * 2.0)
+    available_height = _VIEW_CUBE_LABEL_TEXTURE_SIZE * 0.60
+    scale = min(
+        available_width / max(bounds.width(), 1e-6),
+        available_height / max(bounds.height(), 1e-6),
+    )
+    centered = QTransform()
+    centered.translate(_VIEW_CUBE_LABEL_TEXTURE_SIZE * 0.5, _VIEW_CUBE_LABEL_TEXTURE_SIZE * 0.56)
+    centered.scale(scale, scale)
+    centered.translate(-bounds.center().x(), -bounds.center().y())
+    label_path = centered.map(base_path)
+
+    image_painter = QPainter(image)
+    image_painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    image_painter.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
+    image_painter.setPen(Qt.PenStyle.NoPen)
+    image_painter.setBrush(_color_with_brightness(QColor(_VIEWPORT_CUBE_TEXT_HEX), 0.98))
+    image_painter.drawPath(label_path)
+    image_painter.end()
+    return image
+
+
 def _draw_view_cube_face_label(
     painter: QPainter,
     face: _ViewCubeFaceOverlay,
 ) -> None:
-    label_path = _view_cube_label_path(face, painter)
-    world_path = _view_cube_label_transform(face).map(label_path)
     clip_path = QPainterPath()
     clip_path.addPolygon(_polygon_from_points(face.polygon))
+    label_image = _view_cube_label_image(face.label, painter.font().family())
+    transform = _view_cube_label_transform(face)
 
     painter.save()
     painter.setClipPath(clip_path)
+    painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+    painter.setTransform(transform, True)
+    painter.drawImage(
+        QRectF(0.0, 0.0, 1.0, 1.0),
+        label_image,
+        QRectF(0.0, 0.0, float(label_image.width()), float(label_image.height())),
+    )
+    painter.restore()
+
+
+def _polygon_bounds(polygons: list[tuple[tuple[float, float], ...]]) -> QRectF:
+    xs = [point[0] for polygon in polygons for point in polygon]
+    ys = [point[1] for polygon in polygons for point in polygon]
+    return QRectF(min(xs), min(ys), max(xs) - min(xs), max(ys) - min(ys))
+
+
+@lru_cache(maxsize=None)
+def _view_cube_icon_path(control_kind: str) -> Path | None:
+    for suffix in (".svg", ".png"):
+        candidate = _VIEW_CUBE_ICON_DIR / f"{control_kind}{suffix}"
+        if candidate.exists():
+            return candidate
+    return None
+
+
+@lru_cache(maxsize=None)
+def _view_cube_icon_pixmap(control_kind: str) -> QPixmap | None:
+    icon_path = _view_cube_icon_path(control_kind)
+    if icon_path is None:
+        return None
+    pixmap = QPixmap(str(icon_path))
+    if pixmap.isNull():
+        return None
+    return pixmap
+
+
+@lru_cache(maxsize=None)
+def _view_cube_icon_renderer(control_kind: str):
+    icon_path = _view_cube_icon_path(control_kind)
+    if icon_path is None or icon_path.suffix.lower() != ".svg" or not _HAS_QT_SVG or QSvgRenderer is None:
+        return None
+    renderer = QSvgRenderer(str(icon_path))
+    if not renderer.isValid():
+        return None
+    return renderer
+
+
+def _draw_view_cube_icon_asset(
+    painter: QPainter,
+    control_kind: str,
+    bounds: QRectF,
+) -> bool:
+    renderer = _view_cube_icon_renderer(control_kind)
+    if renderer is not None:
+        renderer.render(painter, bounds)
+        return True
+    pixmap = _view_cube_icon_pixmap(control_kind)
+    if pixmap is None:
+        return False
+    painter.drawPixmap(bounds.toRect(), pixmap)
+    return True
+
+
+def _draw_view_cube_control(
+    painter: QPainter,
+    control: _ViewCubeControlOverlay,
+) -> None:
+    bounds = _polygon_bounds([control.polygon])
+    asset_bounds = bounds.adjusted(1.0, 1.0, -1.0, -1.0)
+    if _draw_view_cube_icon_asset(painter, control.kind, asset_bounds):
+        return
+
+    if control.kind.startswith("rotate_"):
+        centroid_x = sum(point[0] for point in control.polygon) / len(control.polygon)
+        centroid_y = sum(point[1] for point in control.polygon) / len(control.polygon)
+        outline = tuple(
+            (
+                centroid_x + (point[0] - centroid_x) * 0.84,
+                centroid_y + (point[1] - centroid_y) * 0.84,
+            )
+            for point in control.polygon
+        )
+        painter.setPen(QPen(QColor(_VIEWPORT_CUBE_FACE_HEX), 1.15))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawPolygon(_polygon_from_points(outline))
+        return
+
+    if control.kind.startswith("roll_"):
+        _draw_roll_control(painter, control.kind, control.polygon)
+        return
+
+    painter.setPen(QPen(QColor(_VIEWPORT_CUBE_CONTROL_EDGE_HEX), 0.85))
+    painter.setBrush(QColor(_VIEWPORT_CUBE_CONTROL_HEX))
+    painter.drawRoundedRect(bounds, 5.0, 5.0)
+
+    if control.kind == "home":
+        _draw_home_control(painter, control.polygon)
+
+
+def _draw_home_control(
+    painter: QPainter,
+    polygon: tuple[tuple[float, float], ...],
+) -> None:
+    bounds = _polygon_bounds([polygon]).adjusted(3.0, 3.0, -3.0, -3.0)
+    roof = (
+        (bounds.center().x(), bounds.top()),
+        (bounds.right(), bounds.top() + bounds.height() * 0.42),
+        (bounds.left(), bounds.top() + bounds.height() * 0.42),
+    )
+    body = QRectF(
+        bounds.left() + bounds.width() * 0.22,
+        bounds.top() + bounds.height() * 0.42,
+        bounds.width() * 0.56,
+        bounds.height() * 0.42,
+    )
     painter.setPen(Qt.PenStyle.NoPen)
-    painter.setBrush(_color_with_brightness(QColor(_VIEWPORT_CUBE_TEXT_HEX), 0.98))
-    painter.drawPath(world_path)
+    painter.setBrush(QColor(_VIEWPORT_CUBE_CONTROL_ICON_HEX))
+    painter.drawPolygon(_polygon_from_points(roof))
+    painter.drawRoundedRect(body, 1.5, 1.5)
+
+
+def _draw_roll_control(
+    painter: QPainter,
+    kind: str,
+    polygon: tuple[tuple[float, float], ...],
+) -> None:
+    bounds = _polygon_bounds([polygon]).adjusted(1.8, 1.2, -1.8, -1.2)
+    icon_color = QColor(_VIEWPORT_CUBE_FACE_HEX)
+    pen = QPen(icon_color, 1.2)
+    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+    pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+
+    painter.save()
+    if kind == "roll_left":
+        center_x = bounds.center().x()
+        painter.translate(center_x, 0.0)
+        painter.scale(-1.0, 1.0)
+        painter.translate(-center_x, 0.0)
+
+    start_angle = 210.0
+    sweep_angle = -245.0
+    path = QPainterPath()
+    path.arcMoveTo(bounds, start_angle)
+    path.arcTo(bounds, start_angle, sweep_angle)
+    painter.setPen(pen)
+    painter.setBrush(Qt.BrushStyle.NoBrush)
+    painter.drawPath(path)
+
+    end_angle = start_angle + sweep_angle
+    radians = math.radians(end_angle)
+    center = bounds.center()
+    radius_x = bounds.width() * 0.5
+    radius_y = bounds.height() * 0.5
+    tip = (
+        center.x() + math.cos(radians) * radius_x,
+        center.y() - math.sin(radians) * radius_y,
+    )
+    tangent = (math.sin(radians) * radius_x, math.cos(radians) * radius_y)
+    tangent_length = math.hypot(tangent[0], tangent[1])
+    if tangent_length <= 1e-6:
+        tangent = (1.0, 0.0)
+    else:
+        tangent = (tangent[0] / tangent_length, tangent[1] / tangent_length)
+    normal = (-tangent[1], tangent[0])
+    arrow = (
+        tip,
+        (
+            tip[0] - tangent[0] * 4.8 + normal[0] * 2.2,
+            tip[1] - tangent[1] * 4.8 + normal[1] * 2.2,
+        ),
+        (
+            tip[0] - tangent[0] * 4.8 - normal[0] * 2.2,
+            tip[1] - tangent[1] * 4.8 - normal[1] * 2.2,
+        ),
+    )
+    painter.setPen(Qt.PenStyle.NoPen)
+    painter.setBrush(icon_color)
+    painter.drawPolygon(_polygon_from_points(arrow))
     painter.restore()
 
 
@@ -1162,6 +1816,7 @@ class _SoftwarePropellerViewportWidget(QWidget):
         self._show_wireframe = True
         self._yaw = _DEFAULT_ISO_YAW
         self._pitch = _DEFAULT_ISO_PITCH
+        self._roll = 0.0
         self._distance = 4.0
         self._center = (0.0, 0.0, 0.0)
         self._last_pos = QPoint()
@@ -1333,7 +1988,7 @@ class _SoftwarePropellerViewportWidget(QWidget):
         if event.button() == Qt.MouseButton.LeftButton:
             target = self._hit_test_view_cube(event.position().toPoint())
             if target is not None:
-                self.snap_to_named_view(target.view_name)
+                self._apply_view_cube_hotspot(target)
                 event.accept()
                 return
             self._drag_mode = "orbit"
@@ -1354,8 +2009,20 @@ class _SoftwarePropellerViewportWidget(QWidget):
         delta = position - self._last_pos
         self._last_pos = position
         if self._drag_mode == "orbit":
-            self._yaw += delta.x() * 0.6
-            self._pitch = max(-80.0, min(80.0, self._pitch + delta.y() * 0.4))
+            self._yaw, self._pitch, self._roll = _rotate_camera_angles(
+                self._yaw,
+                self._pitch,
+                self._roll,
+                "screen_up",
+                delta.x() * 0.6,
+            )
+            self._yaw, self._pitch, self._roll = _rotate_camera_angles(
+                self._yaw,
+                self._pitch,
+                self._roll,
+                "screen_right",
+                -delta.y() * 0.4,
+            )
         else:
             _, _forward, right, up = self._build_projection()
             scale = self._distance * 0.0018
@@ -1383,6 +2050,18 @@ class _SoftwarePropellerViewportWidget(QWidget):
         eye_direction = _named_view_eye_direction(view_name)
         self._yaw = math.degrees(math.atan2(eye_direction[1], eye_direction[0]))
         self._pitch = math.degrees(math.asin(max(-1.0, min(1.0, eye_direction[2]))))
+        self._roll = 0.0
+        self._drag_mode = None
+        self._settle_interaction()
+        self.update()
+
+    def _apply_view_cube_hotspot(self, hotspot: _ViewCubeHotspot) -> None:
+        self._yaw, self._pitch, self._roll = _apply_view_cube_hotspot(
+            self._yaw,
+            self._pitch,
+            self._roll,
+            hotspot,
+        )
         self._drag_mode = None
         self._settle_interaction()
         self.update()
@@ -1476,7 +2155,7 @@ class _SoftwarePropellerViewportWidget(QWidget):
         self._distance = self._bounds_extent * 2.2
 
     def _camera_state(self) -> _ViewportCameraState:
-        return _camera_state(self._center, self._distance, self._yaw, self._pitch)
+        return _camera_state(self._center, self._distance, self._yaw, self._pitch, self._roll)
 
     def _view_cube_overlay(self) -> _ViewCubeOverlay:
         return _build_view_cube_overlay(self._camera_state(), float(self.width()), float(self.height()))
@@ -1562,6 +2241,7 @@ if _HAS_QT_OPENGL:
             self._show_wireframe = True
             self._yaw = _DEFAULT_ISO_YAW
             self._pitch = _DEFAULT_ISO_PITCH
+            self._roll = 0.0
             self._distance = 4.0
             self._center = (0.0, 0.0, 0.0)
             self._last_pos = QPoint()
@@ -1697,7 +2377,7 @@ if _HAS_QT_OPENGL:
             if event.button() == Qt.MouseButton.LeftButton:
                 target = self._hit_test_view_cube(event.position().toPoint())
                 if target is not None:
-                    self.snap_to_named_view(target.view_name)
+                    self._apply_view_cube_hotspot(target)
                     event.accept()
                     return
                 self._drag_mode = "orbit"
@@ -1718,8 +2398,20 @@ if _HAS_QT_OPENGL:
             delta = position - self._last_pos
             self._last_pos = position
             if self._drag_mode == "orbit":
-                self._yaw += delta.x() * 0.6
-                self._pitch = max(-80.0, min(80.0, self._pitch + delta.y() * 0.4))
+                self._yaw, self._pitch, self._roll = _rotate_camera_angles(
+                    self._yaw,
+                    self._pitch,
+                    self._roll,
+                    "screen_up",
+                    delta.x() * 0.6,
+                )
+                self._yaw, self._pitch, self._roll = _rotate_camera_angles(
+                    self._yaw,
+                    self._pitch,
+                    self._roll,
+                    "screen_right",
+                    -delta.y() * 0.4,
+                )
             else:
                 _, _forward, right, up = self._build_projection()
                 scale = self._distance * 0.0018
@@ -1750,6 +2442,18 @@ if _HAS_QT_OPENGL:
             eye_direction = _named_view_eye_direction(view_name)
             self._yaw = math.degrees(math.atan2(eye_direction[1], eye_direction[0]))
             self._pitch = math.degrees(math.asin(max(-1.0, min(1.0, eye_direction[2]))))
+            self._roll = 0.0
+            self._drag_mode = None
+            self._settle_interaction()
+            self.update()
+
+        def _apply_view_cube_hotspot(self, hotspot: _ViewCubeHotspot) -> None:
+            self._yaw, self._pitch, self._roll = _apply_view_cube_hotspot(
+                self._yaw,
+                self._pitch,
+                self._roll,
+                hotspot,
+            )
             self._drag_mode = None
             self._settle_interaction()
             self.update()
@@ -2154,7 +2858,7 @@ if _HAS_QT_OPENGL:
             self._distance = self._bounds_extent * 2.2
 
         def _camera_state(self) -> _ViewportCameraState:
-            return _camera_state(self._center, self._distance, self._yaw, self._pitch)
+            return _camera_state(self._center, self._distance, self._yaw, self._pitch, self._roll)
 
         def _view_cube_overlay(self) -> _ViewCubeOverlay:
             return _build_view_cube_overlay(self._camera_state(), float(self.width()), float(self.height()))
