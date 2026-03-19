@@ -278,11 +278,11 @@ class ContextRibbon(QWidget):
         pixmap = QPixmap(size, size)
         pixmap.fill(Qt.GlobalColor.transparent)
 
-        accent = self._theme_colors.get("accent", "#4d80c4")
+        accent = self._theme_colors.get("icon_bg", self._theme_colors.get("accent", "#5a5a5a"))
         icon_text = self._theme_colors.get("icon_text", "#f4f8ff")
         color = QColor(accent)
         if not large:
-            color = color.lighter(120)
+            color = color.lighter(108)
 
         painter = QPainter(pixmap)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)

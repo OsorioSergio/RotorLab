@@ -40,51 +40,63 @@ from rotorlab_app.ui.typography import (
 
 THEMES: dict[str, dict[str, str]] = {
     "Dark": {
-        "app_bg": "#131923",
-        "title_bg": "#172231",
-        "title_border": "#243345",
-        "text_primary": "#e8eef7",
-        "text_muted": "#9fb0c8",
-        "menu_bg": "#1b2636",
-        "menu_border": "#2a3d56",
-        "menu_hover": "#2d4360",
-        "tab_row_bg": "#0f1723",
-        "tab_bg": "#1a2738",
-        "tab_active": "#2c3f5a",
-        "tab_border": "#2e4158",
-        "context_bg": "#111c2b",
-        "ribbon_group_bg": "#152334",
-        "ribbon_group_border": "#2d4562",
-        "ribbon_title": "#9cb1cc",
-        "ribbon_hover": "#314967",
-        "status_bg": "#101a2a",
-        "status_border": "#24364d",
-        "workspace_bg": "#161f2d",
-        "placeholder_sub": "#8d9eb6",
-        "accent": "#4d80c4",
-        "icon_text": "#f4f8ff",
+        "app_bg": "#252525",
+        "title_bg": "#2b2b2b",
+        "title_border": "#3a3a3a",
+        "text_primary": "#e0e0e0",
+        "text_muted": "#999999",
+        "text_disabled": "#555555",
+        "menu_bg": "#333333",
+        "menu_border": "#454545",
+        "menu_hover": "#3c3c3c",
+        "tab_row_bg": "#252525",
+        "tab_bg": "#2e2e2e",
+        "tab_active": "#3c3c3c",
+        "tab_border": "#444444",
+        "context_bg": "#333333",
+        "ribbon_group_bg": "#3a3a3a",
+        "ribbon_group_border": "#474747",
+        "ribbon_title": "#b7b7b7",
+        "ribbon_hover": "#444444",
+        "status_bg": "#2b2b2b",
+        "status_border": "#3d3d3d",
+        "workspace_bg": "#2f2f2f",
+        "placeholder_sub": "#999999",
+        "accent": "#0078d4",
+        "icon_bg": "#5a5a5a",
+        "icon_text": "#f1f1f1",
+        "button_bg": "#383838",
+        "button_hover": "#5a5a5a",
+        "button_pressed": "#444444",
+        "input_bg": "#383838",
+        "input_focus": "#444444",
         "close_hover": "#c42b1c",
-        "border": "#2a3a50",
-        "library_bg": "#252d39",
-        "library_alt": "#2d3542",
-        "library_text": "#e7edf7",
-        "canvas_bg": "#d0d4da",
-        "node_bg": "#f8fbff",
-        "node_border": "#2e4f77",
-        "node_text_sub": "#5f6b7a",
-        "overlay_valid_border": "#2fd651",
-        "overlay_valid_fill": "#2fd65130",
-        "overlay_active_border": "#1cb73d",
-        "port_input": "#5db4ff",
-        "port_output": "#ffb15f",
-        "port_border": "#223349",
-        "port_compatible": "#3bcf67",
-        "port_active": "#ffd166",
-        "port_disabled": "#6e7f93",
-        "connection_line": "#6d91bf",
-        "connection_selected": "#ffd166",
-        "connection_preview_valid": "#3bcf67",
-        "connection_preview_invalid": "#d15858",
+        "border": "#444444",
+        "table_header_bg": "#353535",
+        "table_row_even": "#2a2a2a",
+        "table_row_odd": "#313131",
+        "library_bg": "#252525",
+        "library_alt": "#2e2e2e",
+        "library_text": "#e0e0e0",
+        "canvas_bg": "#484848",
+        "node_bg": "#2f2f2f",
+        "node_border": "#4a4a4a",
+        "node_header_bg": "#353535",
+        "node_header_text": "#e0e0e0",
+        "node_text_sub": "#bdbdbd",
+        "overlay_valid_border": "#0078d4",
+        "overlay_valid_fill": "#0078d426",
+        "overlay_active_border": "#e8a628",
+        "port_input": "#0078d4",
+        "port_output": "#e8a628",
+        "port_border": "#232323",
+        "port_compatible": "#69b66c",
+        "port_active": "#e8a628",
+        "port_disabled": "#6e6e6e",
+        "connection_line": "#7d91a6",
+        "connection_selected": "#0078d4",
+        "connection_preview_valid": "#69b66c",
+        "connection_preview_invalid": "#c95a5a",
     },
     "Light": {
         "app_bg": "#eef2f8",
@@ -92,6 +104,7 @@ THEMES: dict[str, dict[str, str]] = {
         "title_border": "#b8c9e0",
         "text_primary": "#1a2a3f",
         "text_muted": "#58708f",
+        "text_disabled": "#90a0b3",
         "menu_bg": "#f5f8fc",
         "menu_border": "#c6d3e5",
         "menu_hover": "#dbe8fa",
@@ -109,15 +122,26 @@ THEMES: dict[str, dict[str, str]] = {
         "workspace_bg": "#e9eef7",
         "placeholder_sub": "#5d7695",
         "accent": "#3f73bb",
+        "icon_bg": "#d4deec",
         "icon_text": "#f7fbff",
+        "button_bg": "#edf3fb",
+        "button_hover": "#dbe8fa",
+        "button_pressed": "#c9dcf4",
+        "input_bg": "#ffffff",
+        "input_focus": "#f0f5fd",
         "close_hover": "#c42b1c",
         "border": "#b4c6dd",
+        "table_header_bg": "#e3ebf7",
+        "table_row_even": "#f7f9fc",
+        "table_row_odd": "#edf3fb",
         "library_bg": "#f1f5fc",
         "library_alt": "#e8eef8",
         "library_text": "#1b2b40",
         "canvas_bg": "#f7f9fc",
         "node_bg": "#ffffff",
         "node_border": "#376095",
+        "node_header_bg": "#d7e4f4",
+        "node_header_text": "#1a2a3f",
         "node_text_sub": "#566b84",
         "overlay_valid_border": "#28bf49",
         "overlay_valid_fill": "#28bf4926",
@@ -718,6 +742,9 @@ class RotorLabMainWindow(QMainWindow):
             QTabBar#EnvironmentTabs::tab:selected {{
                 background-color: {colors["tab_active"]};
             }}
+            QTabBar#EnvironmentTabs::tab:hover:!selected {{
+                background-color: {colors["menu_hover"]};
+            }}
             QWidget#ContextRow {{
                 background-color: {colors["context_bg"]};
                 border-bottom: 1px solid {colors["border"]};
@@ -726,9 +753,10 @@ class RotorLabMainWindow(QMainWindow):
                 background-color: {colors["context_bg"]};
             }}
             QWidget#RibbonGroup {{
-                background-color: transparent;
-                border: none;
-                margin: 0px 2px;
+                background-color: {colors["ribbon_group_bg"]};
+                border: 1px solid {colors["ribbon_group_border"]};
+                border-radius: 6px;
+                margin: 3px 6px 0 0;
             }}
             QFrame#RibbonGroupSeparator {{
                 color: {colors["border"]};
@@ -774,13 +802,16 @@ class RotorLabMainWindow(QMainWindow):
                 border-top: 1px solid {colors["status_border"]};
             }}
             QStatusBar QPushButton {{
-                background-color: transparent;
+                background-color: {colors["button_bg"]};
                 color: {colors["text_primary"]};
                 border: 1px solid {colors["status_border"]};
                 padding: 2px 8px;
             }}
             QStatusBar QPushButton:hover {{
-                background-color: {colors["menu_hover"]};
+                background-color: {colors["button_hover"]};
+            }}
+            QStatusBar QPushButton:pressed {{
+                background-color: {colors["button_pressed"]};
             }}
             QMenu {{
                 background-color: {colors["menu_bg"]};

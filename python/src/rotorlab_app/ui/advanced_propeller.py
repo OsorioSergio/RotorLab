@@ -9,7 +9,7 @@ from functools import lru_cache
 from pathlib import Path
 
 from PyQt6.QtCore import QPoint, QPointF, QRectF, Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QColor, QFont, QImage, QMatrix4x4, QPainter, QPainterPath, QPen, QPixmap, QPolygonF, QTransform, QVector3D, QVector4D
+from PyQt6.QtGui import QColor, QFont, QImage, QLinearGradient, QMatrix4x4, QPainter, QPainterPath, QPen, QPixmap, QPolygonF, QTransform, QVector3D, QVector4D
 from PyQt6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -139,6 +139,8 @@ class _ViewCubeFaceOverlay:
     brightness: float
     depth: float
     label_quad: tuple[tuple[float, float], ...]
+    screen_area: float = 0.0
+    facing: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -148,6 +150,8 @@ class _ViewCubePanelOverlay:
     polygon: tuple[tuple[float, float], ...]
     brightness: float
     depth: float
+    screen_area: float = 0.0
+    facing: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -207,18 +211,19 @@ _SECTION_OVERLAY_ALPHA = 0.88
 _OVERLAY_DEPTH_BIAS = 0.00035
 _DISPLAY_EDGE_DEPTH_BIAS = 0.00018
 _DISPLAY_EDGE_CREASE_ANGLE_DEGREES = 34.0
-_VIEWPORT_BACKGROUND_HEX = "#394454"
-_VIEWPORT_SURFACE_HEX = "#d9d7d4"
-_VIEWPORT_DISPLAY_EDGE_HEX = "#6c737d"
-_VIEWPORT_WIREFRAME_HEX = "#8eb4dc"
-_VIEWPORT_CUBE_FACE_HEX = "#d9d9d8"
-_VIEWPORT_CUBE_BEVEL_HEX = "#c9c9c7"
-_VIEWPORT_CUBE_CORNER_HEX = "#bdbdbb"
-_VIEWPORT_CUBE_EDGE_HEX = "#7c8086"
-_VIEWPORT_CUBE_TEXT_HEX = "#44484f"
-_VIEWPORT_CUBE_CONTROL_HEX = "#d6d6d5"
-_VIEWPORT_CUBE_CONTROL_EDGE_HEX = "#6f747b"
-_VIEWPORT_CUBE_CONTROL_ICON_HEX = "#535860"
+_VIEWPORT_BACKGROUND_HEX = "#5f6d86"
+_VIEWPORT_BACKGROUND_BOTTOM_HEX = "#253041"
+_VIEWPORT_SURFACE_HEX = "#d6d1cb"
+_VIEWPORT_DISPLAY_EDGE_HEX = "#6f7478"
+_VIEWPORT_WIREFRAME_HEX = "#86a8c7"
+_VIEWPORT_CUBE_FACE_HEX = "#d5d5d3"
+_VIEWPORT_CUBE_BEVEL_HEX = "#c3c3c1"
+_VIEWPORT_CUBE_CORNER_HEX = "#b2b2b0"
+_VIEWPORT_CUBE_EDGE_HEX = "#6f7277"
+_VIEWPORT_CUBE_TEXT_HEX = "#34373c"
+_VIEWPORT_CUBE_CONTROL_HEX = "#cfcfcd"
+_VIEWPORT_CUBE_CONTROL_EDGE_HEX = "#666a70"
+_VIEWPORT_CUBE_CONTROL_ICON_HEX = "#4d5158"
 _VIEWPORT_TRIAD_X_HEX = "#d94343"
 _VIEWPORT_TRIAD_Y_HEX = "#33b146"
 _VIEWPORT_TRIAD_Z_HEX = "#3a64ff"
@@ -249,6 +254,14 @@ _VIEW_CUBE_LABEL_MARGIN = 0.07
 _VIEW_CUBE_LABEL_HEIGHT = 0.40
 _VIEW_CUBE_LABEL_PIXEL_SIZE = 128
 _VIEW_CUBE_LABEL_TEXTURE_SIZE = 512
+_VIEW_CUBE_MIN_FACE_AREA = 2.0
+_VIEW_CUBE_MIN_EDGE_AREA = 1.5
+_VIEW_CUBE_MIN_CORNER_AREA = 0.75
+_VIEW_CUBE_MIN_OUTLINE_AREA = 0.95
+_VIEW_CUBE_EDGE_FACING_THRESHOLD = 0.035
+_VIEW_CUBE_CORNER_FACING_THRESHOLD = 0.08
+_VIEW_CUBE_DOMINANT_FACE_RATIO = 5.0
+_VIEW_CUBE_DOMINANT_EDGE_AREA = 8.5
 _VIEW_CUBE_FACE_ORDER = ("Top", "Bottom", "Front", "Back", "Right", "Left")
 _VIEW_NAME_ORDER = ("Top", "Bottom", "Front", "Back", "Right", "Left")
 _VIEW_CUBE_ICON_DIR = Path(__file__).with_name("assets") / "view_cube"
@@ -324,13 +337,13 @@ _VIEW_CUBE_ARROW_STEPS: dict[str, tuple[str, float]] = {
 
 def _series_color(index: int) -> QColor:
     palette = (
-        QColor("#4d80c4"),
-        QColor("#5cc88a"),
-        QColor("#efad4d"),
-        QColor("#e7726a"),
-        QColor("#8a76d9"),
-        QColor("#35b7c7"),
-        QColor("#db72a5"),
+        QColor("#0078d4"),
+        QColor("#e8a628"),
+        QColor("#6da57a"),
+        QColor("#c86b4d"),
+        QColor("#8fa3b8"),
+        QColor("#5ea7aa"),
+        QColor("#b9847a"),
     )
     return palette[index % len(palette)]
 
@@ -538,6 +551,28 @@ def _color_with_brightness(color: QColor, brightness: float, alpha: float = 1.0)
     )
 
 
+def _viewport_background_gradient(
+    rect: QRectF,
+    top_color: QColor,
+    bottom_color: QColor,
+) -> QLinearGradient:
+    gradient = QLinearGradient(rect.left(), rect.top(), rect.left(), rect.bottom())
+    gradient.setColorAt(0.0, _color_with_brightness(top_color, 1.08))
+    gradient.setColorAt(0.34, top_color)
+    gradient.setColorAt(0.68, _color_with_brightness(bottom_color, 1.38))
+    gradient.setColorAt(1.0, bottom_color)
+    return gradient
+
+
+def _paint_viewport_background(
+    painter: QPainter,
+    rect: QRectF,
+    top_color: QColor,
+    bottom_color: QColor,
+) -> None:
+    painter.fillRect(rect, _viewport_background_gradient(rect, top_color, bottom_color))
+
+
 def _surface_brightness(normal: tuple[float, float, float]) -> float:
     diffuse = max(0.0, _dot(_normalize(normal), _normalize(_VIEWPORT_LIGHT_DIRECTION)))
     return min(1.0, _VIEWPORT_LIGHT_AMBIENT + diffuse * _VIEWPORT_LIGHT_DIFFUSE)
@@ -545,6 +580,43 @@ def _surface_brightness(normal: tuple[float, float, float]) -> float:
 
 def _polygon_from_points(points: tuple[tuple[float, float], ...]) -> QPolygonF:
     return QPolygonF([QPointF(point[0], point[1]) for point in points])
+
+
+def _polygon_area(points: tuple[tuple[float, float], ...]) -> float:
+    if len(points) < 3:
+        return 0.0
+    doubled_area = 0.0
+    for index, point in enumerate(points):
+        next_point = points[(index + 1) % len(points)]
+        doubled_area += point[0] * next_point[1] - next_point[0] * point[1]
+    return abs(doubled_area) * 0.5
+
+
+def _view_cube_panel_min_area(kind: str, dominant_face_mode: bool = False) -> float:
+    if kind == "face":
+        return _VIEW_CUBE_MIN_FACE_AREA
+    if kind == "edge":
+        return _VIEW_CUBE_DOMINANT_EDGE_AREA if dominant_face_mode else _VIEW_CUBE_MIN_EDGE_AREA
+    return float("inf") if dominant_face_mode else _VIEW_CUBE_MIN_CORNER_AREA
+
+
+def _view_cube_panel_facing_threshold(kind: str) -> float:
+    if kind == "edge":
+        return _VIEW_CUBE_EDGE_FACING_THRESHOLD
+    if kind == "corner":
+        return _VIEW_CUBE_CORNER_FACING_THRESHOLD
+    return 1e-5
+
+
+def _is_dominant_view_cube_face_mode(
+    face_entries: list[tuple[float, float, _ViewCubeFaceOverlay]],
+) -> bool:
+    if not face_entries:
+        return False
+    sorted_entries = sorted(face_entries, key=lambda item: item[0], reverse=True)
+    top_area = sorted_entries[0][0]
+    next_area = sorted_entries[1][0] if len(sorted_entries) > 1 else 0.0
+    return next_area <= 1e-6 or top_area >= next_area * _VIEW_CUBE_DOMINANT_FACE_RATIO
 
 
 def _distance_between_points(
@@ -616,22 +688,23 @@ def _build_view_cube_overlay(
     )
     inset = max(0.05, 1.0 - _VIEW_CUBE_CHAMFER_RATIO)
     overlay_eye = _scale(camera.eye_direction, _VIEW_CUBE_CAMERA_DISTANCE)
-    visible_faces: list[_ViewCubeFaceOverlay] = []
-    edge_panels: list[_ViewCubePanelOverlay] = []
-    corner_panels: list[_ViewCubePanelOverlay] = []
-    hotspots: list[_ViewCubeHotspot] = []
+    face_entries: list[tuple[float, float, _ViewCubeFaceOverlay]] = []
+    edge_entries: list[tuple[float, float, _ViewCubePanelOverlay]] = []
+    corner_entries: list[tuple[float, float, _ViewCubePanelOverlay]] = []
     for panel in _build_view_cube_body_panels(inset):
         panel_center = tuple(
             sum(point[index] for point in panel.points) / len(panel.points)
             for index in range(3)
         )
         view_direction = _normalize(_sub(overlay_eye, panel_center))
-        if _dot(panel.normal, view_direction) <= 1e-5:
+        facing = _dot(panel.normal, view_direction)
+        if facing <= _view_cube_panel_facing_threshold(panel.kind):
             continue
         projected = _project_view_cube_points(panel.points, camera, cube_center, size)
         depth = sum(point[2] for point in projected) / len(projected)
         brightness = _surface_brightness(panel.normal)
         polygon = tuple((point[0], point[1]) for point in projected)
+        screen_area = _polygon_area(polygon)
         if panel.kind == "face":
             label_quad_3d = panel.label_quad or panel.points
             projected_label = _project_view_cube_points(label_quad_3d, camera, cube_center, size)
@@ -642,16 +715,10 @@ def _build_view_cube_overlay(
                 brightness=brightness,
                 depth=depth,
                 label_quad=tuple((point[0], point[1]) for point in projected_label),
+                screen_area=screen_area,
+                facing=facing,
             )
-            visible_faces.append(face)
-            hotspots.append(
-                _ViewCubeHotspot(
-                    kind="face",
-                    action="snap",
-                    view_name=panel.view_name,
-                    polygon=polygon,
-                )
-            )
+            face_entries.append((screen_area, facing, face))
         elif panel.kind == "edge":
             edge_panel = _ViewCubePanelOverlay(
                 kind="edge",
@@ -659,16 +726,10 @@ def _build_view_cube_overlay(
                 polygon=polygon,
                 brightness=brightness,
                 depth=depth,
+                screen_area=screen_area,
+                facing=facing,
             )
-            edge_panels.append(edge_panel)
-            hotspots.append(
-                _ViewCubeHotspot(
-                    kind="edge",
-                    action="snap",
-                    view_name=panel.view_name,
-                    polygon=polygon,
-                )
-            )
+            edge_entries.append((screen_area, facing, edge_panel))
         else:
             corner_panel = _ViewCubePanelOverlay(
                 kind="corner",
@@ -676,20 +737,63 @@ def _build_view_cube_overlay(
                 polygon=polygon,
                 brightness=brightness,
                 depth=depth,
+                screen_area=screen_area,
+                facing=facing,
             )
-            corner_panels.append(corner_panel)
-            hotspots.append(
-                _ViewCubeHotspot(
-                    kind="corner",
-                    action="snap",
-                    view_name=panel.view_name,
-                    polygon=polygon,
-                )
-            )
+            corner_entries.append((screen_area, facing, corner_panel))
 
-    visible_faces.sort(key=lambda face: face.depth, reverse=True)
-    edge_panels.sort(key=lambda panel: panel.depth)
-    corner_panels.sort(key=lambda panel: panel.depth)
+    face_entries.sort(key=lambda item: (item[2].depth, item[0], item[2].view_name), reverse=True)
+    dominant_face_mode = _is_dominant_view_cube_face_mode(face_entries)
+
+    visible_faces = [
+        panel
+        for index, (screen_area, _facing, panel) in enumerate(face_entries)
+        if screen_area >= _view_cube_panel_min_area("face") or index == 0
+    ]
+    edge_panels = [
+        panel
+        for screen_area, _facing, panel in edge_entries
+        if screen_area >= _view_cube_panel_min_area("edge", dominant_face_mode)
+    ]
+    corner_panels = [
+        panel
+        for screen_area, _facing, panel in corner_entries
+        if screen_area >= _view_cube_panel_min_area("corner", dominant_face_mode)
+    ]
+
+    visible_faces.sort(key=lambda panel: (panel.depth, panel.screen_area, panel.view_name), reverse=True)
+    edge_panels.sort(key=lambda panel: (panel.depth, panel.screen_area, panel.view_name))
+    corner_panels.sort(key=lambda panel: (panel.depth, panel.screen_area, panel.view_name))
+
+    hotspots: list[_ViewCubeHotspot] = []
+    for face in visible_faces:
+        hotspots.append(
+            _ViewCubeHotspot(
+                kind="face",
+                action="snap",
+                view_name=face.view_name,
+                polygon=face.polygon,
+            )
+        )
+    for panel in edge_panels:
+        hotspots.append(
+            _ViewCubeHotspot(
+                kind="edge",
+                action="snap",
+                view_name=panel.view_name,
+                polygon=panel.polygon,
+            )
+        )
+    for panel in corner_panels:
+        hotspots.append(
+            _ViewCubeHotspot(
+                kind="corner",
+                action="snap",
+                view_name=panel.view_name,
+                polygon=panel.polygon,
+            )
+        )
+
     controls, control_hotspots = _build_view_cube_controls(widget_rect, cube_center, size)
     hotspots.extend(control_hotspots)
     return _ViewCubeOverlay(
@@ -1076,14 +1180,17 @@ def _draw_view_cube_overlay(
     painter: QPainter,
     overlay: _ViewCubeOverlay,
 ) -> None:
-    body_panels: list[tuple[float, str, object]] = []
-    body_panels.extend((panel.depth, "edge", panel) for panel in overlay.edge_panels)
-    body_panels.extend((panel.depth, "corner", panel) for panel in overlay.corner_panels)
-    body_panels.extend((face.depth, "face", face) for face in overlay.faces)
-    body_panels.sort(key=lambda item: item[0], reverse=True)
+    body_panels: list[tuple[float, str, str, object]] = []
+    body_panels.extend((panel.depth, "edge", panel.view_name, panel) for panel in overlay.edge_panels)
+    body_panels.extend((panel.depth, "corner", panel.view_name, panel) for panel in overlay.corner_panels)
+    body_panels.extend((face.depth, "face", face.view_name, face) for face in overlay.faces)
+    kind_priority = {"face": 0, "edge": 1, "corner": 2}
+    body_panels.sort(
+        key=lambda item: (-round(item[0], 6), kind_priority.get(item[1], 99), item[2])
+    )
 
-    painter.setPen(QPen(QColor(_VIEWPORT_CUBE_EDGE_HEX), 0.85))
-    for _depth, kind, panel in body_panels:
+    painter.setPen(Qt.PenStyle.NoPen)
+    for _depth, kind, _view_name, panel in body_panels:
         if kind == "face":
             assert isinstance(panel, _ViewCubeFaceOverlay)
             painter.setBrush(_color_with_brightness(QColor(_VIEWPORT_CUBE_FACE_HEX), panel.brightness))
@@ -1097,6 +1204,18 @@ def _draw_view_cube_overlay(
             assert isinstance(panel, _ViewCubePanelOverlay)
             painter.setBrush(_color_with_brightness(QColor(_VIEWPORT_CUBE_CORNER_HEX), panel.brightness))
             painter.drawPolygon(_polygon_from_points(panel.polygon))
+
+    outline_color = QColor(_VIEWPORT_CUBE_EDGE_HEX)
+    outline_color.setAlpha(208)
+    outline_pen = QPen(outline_color, 0.8)
+    outline_pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+    outline_pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+    painter.setPen(outline_pen)
+    painter.setBrush(Qt.BrushStyle.NoBrush)
+    for _depth, _kind, _view_name, panel in body_panels:
+        polygon = panel.polygon if isinstance(panel, (_ViewCubeFaceOverlay, _ViewCubePanelOverlay)) else ()
+        if polygon and panel.screen_area >= _VIEW_CUBE_MIN_OUTLINE_AREA:
+            painter.drawPolygon(_polygon_from_points(polygon))
 
     for control in overlay.controls:
         _draw_view_cube_control(painter, control)
@@ -1191,20 +1310,16 @@ def _draw_view_cube_face_label(
     painter: QPainter,
     face: _ViewCubeFaceOverlay,
 ) -> None:
-    clip_path = QPainterPath()
-    clip_path.addPolygon(_polygon_from_points(face.polygon))
-    label_image = _view_cube_label_image(face.label, painter.font().family())
     transform = _view_cube_label_transform(face)
+    label_path = _view_cube_label_path(face, painter)
 
     painter.save()
-    painter.setClipPath(clip_path)
-    painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
     painter.setTransform(transform, True)
-    painter.drawImage(
-        QRectF(0.0, 0.0, 1.0, 1.0),
-        label_image,
-        QRectF(0.0, 0.0, float(label_image.width()), float(label_image.height())),
-    )
+    painter.setClipRect(QRectF(0.0, 0.0, 1.0, 1.0))
+    painter.setPen(Qt.PenStyle.NoPen)
+    painter.setBrush(_color_with_brightness(QColor(_VIEWPORT_CUBE_TEXT_HEX), 0.98))
+    painter.drawPath(label_path)
     painter.restore()
 
 
@@ -1486,6 +1601,7 @@ class DistributionEditorWidget(QWidget):
         self.selector.currentIndexChanged.connect(self._on_distribution_selection_changed)
         self.table = QTableWidget(0, 2, self)
         self.table.setObjectName("DistributionTable")
+        self.table.setAlternatingRowColors(True)
         self.table.setHorizontalHeaderLabels(["eta", "value"])
         self.table.horizontalHeader().setStretchLastSection(True)
         self.table.itemChanged.connect(self._on_table_item_changed)
@@ -1627,10 +1743,10 @@ class RadialDistributionPlot(QWidget):
         self._distribution_keys: list[str] = []
         self._highlight_key: str | None = None
         self._colors: dict[str, QColor] = {
-            "background": QColor("#ffffff"),
-            "border": QColor("#b4c6dd"),
-            "muted": QColor("#5d7695"),
-            "highlight": QColor("#3f73bb"),
+            "background": QColor("#2f2f2f"),
+            "border": QColor("#444444"),
+            "muted": QColor("#999999"),
+            "highlight": QColor("#0078d4"),
         }
 
     def set_plot_data(
@@ -1714,11 +1830,11 @@ class SectionPreviewWidget(QWidget):
         self.setMinimumHeight(220)
         self._preview_result: PropellerPreviewResult | None = None
         self._colors = {
-            "background": QColor("#ffffff"),
-            "border": QColor("#b4c6dd"),
-            "curve": QColor("#3f73bb"),
-            "curve_alt": QColor("#d97f2f"),
-            "muted": QColor("#5d7695"),
+            "background": QColor("#2f2f2f"),
+            "border": QColor("#444444"),
+            "curve": QColor("#0078d4"),
+            "curve_alt": QColor("#e8a628"),
+            "muted": QColor("#999999"),
         }
 
     def set_preview_result(self, result: PropellerPreviewResult | None) -> None:
@@ -1805,13 +1921,14 @@ class _SoftwarePropellerViewportWidget(QWidget):
         self.setMinimumHeight(320)
         self._preview_result: PropellerPreviewResult | None = None
         self._background = QColor(_VIEWPORT_BACKGROUND_HEX)
-        self._border = QColor("#2a3a50")
+        self._background_bottom = QColor(_VIEWPORT_BACKGROUND_BOTTOM_HEX)
+        self._border = QColor("#444444")
         self._mesh_fill = QColor(_VIEWPORT_SURFACE_HEX)
         self._display_edge = QColor(_VIEWPORT_DISPLAY_EDGE_HEX)
         self._mesh_wire = QColor(_VIEWPORT_WIREFRAME_HEX)
-        self._section_color = QColor("#efad4d")
-        self._text = QColor("#e8eef7")
-        self._muted = QColor("#9fb0c8")
+        self._section_color = QColor("#e8a628")
+        self._text = QColor("#e0e0e0")
+        self._muted = QColor("#999999")
         self._show_mesh = True
         self._show_wireframe = True
         self._yaw = _DEFAULT_ISO_YAW
@@ -1866,7 +1983,12 @@ class _SoftwarePropellerViewportWidget(QWidget):
     def paintEvent(self, event) -> None:  # type: ignore[override]
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        painter.fillRect(self.rect(), self._background)
+        _paint_viewport_background(
+            painter,
+            QRectF(self.rect()),
+            self._background,
+            self._background_bottom,
+        )
         painter.setPen(QPen(self._border, 1))
         painter.drawRect(self.rect().adjusted(0, 0, -1, -1))
         camera = self._camera_state()
@@ -2230,13 +2352,14 @@ if _HAS_QT_OPENGL:
             self.setMinimumHeight(320)
             self._preview_result: PropellerPreviewResult | None = None
             self._background = QColor(_VIEWPORT_BACKGROUND_HEX)
-            self._border = QColor("#2a3a50")
+            self._background_bottom = QColor(_VIEWPORT_BACKGROUND_BOTTOM_HEX)
+            self._border = QColor("#444444")
             self._mesh_fill = QColor(_VIEWPORT_SURFACE_HEX)
             self._display_edge = QColor(_VIEWPORT_DISPLAY_EDGE_HEX)
             self._mesh_wire = QColor(_VIEWPORT_WIREFRAME_HEX)
-            self._section_color = QColor("#efad4d")
-            self._text = QColor("#e8eef7")
-            self._muted = QColor("#9fb0c8")
+            self._section_color = QColor("#e8a628")
+            self._text = QColor("#e0e0e0")
+            self._muted = QColor("#999999")
             self._show_mesh = True
             self._show_wireframe = True
             self._yaw = _DEFAULT_ISO_YAW
@@ -2331,17 +2454,20 @@ if _HAS_QT_OPENGL:
             if self._gl is None:
                 return
             gl = self._gl
-            gl.glClearColor(
-                self._background.redF(),
-                self._background.greenF(),
-                self._background.blueF(),
-                1.0,
+            camera = self._camera_state()
+            painter = QPainter(self)
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing, not self._interactive_preview)
+            _paint_viewport_background(
+                painter,
+                QRectF(self.rect()),
+                self._background,
+                self._background_bottom,
             )
-            gl.glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
+
+            painter.beginNativePainting()
+            gl.glClear(GL_DEPTH_BUFFER_BIT)
             if self._gpu_dirty:
                 self._upload_buffers()
-
-            camera = self._camera_state()
             if self._preview_result is not None and self._mesh_triangle_count:
                 mvp_matrix = self._build_mvp_matrix()
                 self._apply_pass_config(gl, _SURFACE_PASS_CONFIG)
@@ -2350,9 +2476,8 @@ if _HAS_QT_OPENGL:
                 self._draw_overlays(gl, mvp_matrix)
                 gl.glDepthMask(True)
                 gl.glDisable(GL_BLEND)
+            painter.endNativePainting()
 
-            painter = QPainter(self)
-            painter.setRenderHint(QPainter.RenderHint.Antialiasing, not self._interactive_preview)
             painter.setPen(QPen(self._border, 1))
             painter.drawRect(self.rect().adjusted(0, 0, -1, -1))
             if self._preview_result is None or not self._mesh_triangle_count:
@@ -2966,6 +3091,7 @@ class AdvancedPropellerWorkspace(QWidget):
         self.stage_tree = QTreeWidget(self)
         self.stage_tree.setObjectName("PropellerStageTree")
         self.stage_tree.setHeaderHidden(True)
+        self.stage_tree.setAlternatingRowColors(True)
         self.stage_tree.itemSelectionChanged.connect(self._on_stage_selection_changed)
 
         self.inspector_stack = QStackedWidget(self)
@@ -2976,6 +3102,7 @@ class AdvancedPropellerWorkspace(QWidget):
         self.plot_tabs.addTab(self.section_preview, "Section")
         self.viewport = PropellerViewportWidget(self)
         self.diagnostic_list = QListWidget(self)
+        self.diagnostic_list.setAlternatingRowColors(True)
 
         center_panel = QWidget(self)
         center_layout = QVBoxLayout(center_panel)
@@ -3034,14 +3161,35 @@ class AdvancedPropellerWorkspace(QWidget):
             QTabWidget::pane,
             QListWidget,
             QTableWidget {{
-                background-color: {colors["library_bg"]};
+                background-color: {colors["table_row_odd"]};
+                alternate-background-color: {colors["table_row_even"]};
                 color: {colors["text_primary"]};
                 border: 1px solid {colors["border"]};
+            }}
+            QTreeWidget#PropellerStageTree::item,
+            QListWidget::item,
+            QTableWidget::item {{
+                padding: 4px 6px;
             }}
             QTreeWidget#PropellerStageTree::item:selected,
             QListWidget::item:selected,
             QTableWidget::item:selected {{
                 background-color: {colors["tab_active"]};
+                color: {colors["text_primary"]};
+            }}
+            QTreeWidget#PropellerStageTree::item:hover,
+            QListWidget::item:hover,
+            QTableWidget::item:hover {{
+                background-color: {colors["menu_hover"]};
+            }}
+            QTreeWidget#PropellerStageTree::item:disabled {{
+                color: {colors["text_disabled"]};
+            }}
+            QHeaderView::section {{
+                background-color: {colors["table_header_bg"]};
+                color: {colors["text_muted"]};
+                border: 1px solid {colors["border"]};
+                padding: 4px 6px;
             }}
             QTabBar::tab {{
                 background-color: {colors["tab_bg"]};
@@ -3052,6 +3200,9 @@ class AdvancedPropellerWorkspace(QWidget):
             QTabBar::tab:selected {{
                 background-color: {colors["tab_active"]};
             }}
+            QTabBar::tab:hover:!selected {{
+                background-color: {colors["menu_hover"]};
+            }}
             QPushButton,
             QComboBox,
             QDoubleSpinBox,
@@ -3060,16 +3211,61 @@ class AdvancedPropellerWorkspace(QWidget):
                 color: {colors["text_primary"]};
             }}
             QPushButton {{
-                background-color: {colors["tab_bg"]};
+                background-color: {colors["button_bg"]};
                 border: 1px solid {colors["border"]};
                 padding: 4px 8px;
             }}
             QPushButton:hover {{
-                background-color: {colors["menu_hover"]};
+                background-color: {colors["button_hover"]};
+            }}
+            QPushButton:pressed {{
+                background-color: {colors["button_pressed"]};
+            }}
+            QPushButton:disabled,
+            QComboBox:disabled,
+            QDoubleSpinBox:disabled,
+            QSpinBox:disabled,
+            QCheckBox:disabled {{
+                color: {colors["text_disabled"]};
+            }}
+            QComboBox,
+            QDoubleSpinBox,
+            QSpinBox {{
+                background-color: {colors["input_bg"]};
+                border: 1px solid {colors["border"]};
+                padding: 4px 8px;
+                selection-background-color: {colors["accent"]};
+            }}
+            QComboBox:hover,
+            QDoubleSpinBox:hover,
+            QSpinBox:hover {{
+                background-color: {colors["input_focus"]};
+            }}
+            QComboBox:focus,
+            QDoubleSpinBox:focus,
+            QSpinBox:focus {{
+                background-color: {colors["input_focus"]};
+                border: 1px solid {colors["accent"]};
+            }}
+            QComboBox::drop-down {{
+                border-left: 1px solid {colors["border"]};
+                background-color: {colors["button_bg"]};
+                width: 20px;
+            }}
+            QComboBox QAbstractItemView {{
+                background-color: {colors["library_bg"]};
+                color: {colors["text_primary"]};
+                border: 1px solid {colors["border"]};
+                selection-background-color: {colors["tab_active"]};
             }}
             QFrame#InspectorSection {{
                 border: 1px solid {colors["border"]};
                 background-color: {colors["library_alt"]};
+                border-radius: 4px;
+            }}
+            QSplitter::handle {{
+                background-color: {colors["border"]};
+                width: 1px;
             }}
             """
         )

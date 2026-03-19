@@ -149,8 +149,8 @@ class ModuleLibraryTree(QTreeWidget):
 
         self._header_font = QFont(self.font())
         self._item_font = QFont(self.font())
-        self._icon_bg = QColor("#4d80c4")
-        self._icon_text = QColor("#f4f8ff")
+        self._icon_bg = QColor("#5a5a5a")
+        self._icon_text = QColor("#f1f1f1")
         self._category_items: list[QTreeWidgetItem] = []
         self._module_items: list[QTreeWidgetItem] = []
         self._templates: list[ModuleTemplate] = list(DEFAULT_MODULE_TEMPLATES)
@@ -243,6 +243,7 @@ class ModuleLibraryTree(QTreeWidget):
             QTreeWidget {{
                 background-color: {colors["library_bg"]};
                 color: {colors["library_text"]};
+                alternate-background-color: {colors["library_alt"]};
                 border: 1px solid {colors["border"]};
             }}
             QTreeWidget::item {{
@@ -252,6 +253,9 @@ class ModuleLibraryTree(QTreeWidget):
             QTreeWidget::item:alternate {{
                 background-color: {colors["library_alt"]};
             }}
+            QTreeWidget::item:hover {{
+                background-color: {colors["menu_hover"]};
+            }}
             QTreeWidget::item:selected {{
                 background-color: {colors["tab_active"]};
                 color: {colors["text_primary"]};
@@ -259,7 +263,7 @@ class ModuleLibraryTree(QTreeWidget):
             """
         )
 
-        self._icon_bg = QColor(colors["accent"])
+        self._icon_bg = QColor(colors.get("icon_bg", colors["accent"]))
         self._icon_text = QColor(colors["icon_text"])
 
         for category_item in self._category_items:
@@ -295,8 +299,8 @@ class ModuleIconRailList(QListWidget):
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
 
         self._item_font = QFont(self.font())
-        self._icon_bg = QColor("#4d80c4")
-        self._icon_text = QColor("#f4f8ff")
+        self._icon_bg = QColor("#5a5a5a")
+        self._icon_text = QColor("#f1f1f1")
         self._templates = module_templates
         self._populate()
 
@@ -358,6 +362,7 @@ class ModuleIconRailList(QListWidget):
             f"""
             QListWidget {{
                 background-color: {colors["library_bg"]};
+                color: {colors["library_text"]};
                 border: 1px solid {colors["border"]};
                 padding: 4px;
             }}
@@ -365,12 +370,15 @@ class ModuleIconRailList(QListWidget):
                 min-height: 26px;
                 padding: 2px;
             }}
+            QListWidget::item:hover {{
+                background-color: {colors["menu_hover"]};
+            }}
             QListWidget::item:selected {{
                 background-color: {colors["tab_active"]};
             }}
             """
         )
-        self._icon_bg = QColor(colors["accent"])
+        self._icon_bg = QColor(colors.get("icon_bg", colors["accent"]))
         self._icon_text = QColor(colors["icon_text"])
         for index in range(self.count()):
             item = self.item(index)
@@ -432,7 +440,7 @@ class ModuleSelectorPanel(QWidget):
             }}
             QLabel#ModuleSelectorTitle {{
                 color: {colors["text_primary"]};
-                background-color: {colors["tab_row_bg"]};
+                background-color: {colors.get("table_header_bg", colors["tab_row_bg"])};
                 border-top: 1px solid {colors["border"]};
                 border-bottom: 1px solid {colors["border"]};
                 padding: 6px 10px;
@@ -887,27 +895,27 @@ class WorkflowCanvasScene(QGraphicsScene):
         self._draft_hover_target_port: ModulePortItem | None = None
         self._draft_state: ConnectionDraftState | None = None
 
-        self._node_fill = QColor("#f8fbff")
-        self._node_border = QColor("#2e4f77")
-        self._node_text = QColor("#5f6b7a")
-        self._node_header_fill = QColor("#376095")
-        self._node_header_text = QColor("#f5f8ff")
-        self._node_row_border = QColor("#d3dce8")
-        self._overlay_valid_border = QColor("#1fc84b")
-        self._overlay_valid_fill = QColor("#1fc84b30")
-        self._overlay_active_border = QColor("#0fab37")
+        self._node_fill = QColor("#2f2f2f")
+        self._node_border = QColor("#4a4a4a")
+        self._node_text = QColor("#bdbdbd")
+        self._node_header_fill = QColor("#353535")
+        self._node_header_text = QColor("#e0e0e0")
+        self._node_row_border = QColor("#444444")
+        self._overlay_valid_border = QColor("#0078d4")
+        self._overlay_valid_fill = QColor("#0078d426")
+        self._overlay_active_border = QColor("#e8a628")
 
-        self._port_input_color = QColor("#3ea0f0")
-        self._port_output_color = QColor("#f08b3e")
-        self._port_border_color = QColor("#1c2d43")
-        self._port_compatible_color = QColor("#2abf52")
-        self._port_active_color = QColor("#f4c542")
-        self._port_disabled_color = QColor("#7f8b98")
+        self._port_input_color = QColor("#0078d4")
+        self._port_output_color = QColor("#e8a628")
+        self._port_border_color = QColor("#232323")
+        self._port_compatible_color = QColor("#69b66c")
+        self._port_active_color = QColor("#e8a628")
+        self._port_disabled_color = QColor("#6e6e6e")
 
-        self._connection_color = QColor("#4a6f9e")
-        self._connection_selected_color = QColor("#f4c542")
-        self._connection_preview_valid = QColor("#2abf52")
-        self._connection_preview_invalid = QColor("#cc3e3e")
+        self._connection_color = QColor("#7d91a6")
+        self._connection_selected_color = QColor("#0078d4")
+        self._connection_preview_valid = QColor("#69b66c")
+        self._connection_preview_invalid = QColor("#c95a5a")
 
         self._title_font = QFont()
         self._subtitle_font = QFont()
@@ -1079,8 +1087,10 @@ class WorkflowCanvasScene(QGraphicsScene):
         self._node_fill = QColor(colors["node_bg"])
         self._node_border = QColor(colors["node_border"])
         self._node_text = QColor(colors["node_text_sub"])
-        self._node_header_fill = QColor(colors.get("accent", colors["node_border"]))
-        self._node_header_text = QColor(colors.get("icon_text", "#f5f8ff"))
+        self._node_header_fill = QColor(
+            colors.get("node_header_bg", colors.get("icon_bg", colors["node_border"]))
+        )
+        self._node_header_text = QColor(colors.get("node_header_text", colors["text_primary"]))
         self._node_row_border = QColor(colors.get("border", "#d3dce8"))
         self._overlay_valid_border = QColor(colors.get("overlay_valid_border", "#1fc84b"))
         self._overlay_valid_fill = QColor(colors.get("overlay_valid_fill", "#1fc84b30"))
@@ -1530,7 +1540,7 @@ class WorkflowCanvasView(QGraphicsView):
         super().__init__(scene, parent)
         self.setAcceptDrops(True)
         self.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        self.setBackgroundBrush(QColor("#f3f6fb"))
+        self.setBackgroundBrush(QColor("#484848"))
         self.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)

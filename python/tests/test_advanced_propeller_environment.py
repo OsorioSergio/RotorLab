@@ -21,6 +21,9 @@ from rotorlab_app.ui.advanced_propeller import (
     _OVERLAY_DEPTH_BIAS,
     _OVERLAY_PASS_CONFIG,
     _SURFACE_PASS_CONFIG,
+    _VIEW_CUBE_DOMINANT_EDGE_AREA,
+    _VIEW_CUBE_MIN_CORNER_AREA,
+    _VIEW_CUBE_MIN_EDGE_AREA,
     _VIEWPORT_CUBE_BEVEL_HEX,
     _VIEWPORT_CUBE_FACE_HEX,
     _VIEWPORT_BACKGROUND_HEX,
@@ -361,6 +364,53 @@ def test_view_cube_projection_stays_within_overlay_bounds_across_orientations():
         assert max(xs) <= 900.0 - _VIEW_CUBE_PADDING + 1.0
         assert min(ys) >= _VIEW_CUBE_PADDING - 1.0
         assert max(ys) <= _VIEW_CUBE_PADDING + _VIEW_CUBE_WIDGET_HEIGHT + 1.0
+
+
+def test_view_cube_overlay_stays_visible_and_filters_slivers_across_angle_sweep():
+    yaw_angles = (-180.0, -135.0, -90.0, -45.0, 0.0, 45.0, 90.0, 135.0, 180.0)
+    pitch_angles = (-75.0, -45.0, -15.0, 15.0, 45.0, 75.0)
+    roll_angles = (0.0, 45.0, 90.0, 135.0)
+
+    for yaw in yaw_angles:
+        for pitch in pitch_angles:
+            for roll in roll_angles:
+                overlay = _build_view_cube_overlay(
+                    _camera_state((0.0, 0.0, 0.0), 4.0, yaw, pitch, roll),
+                    900.0,
+                    700.0,
+                )
+
+                assert overlay.faces
+                assert all(face.screen_area > 0.0 for face in overlay.faces)
+                assert all(panel.screen_area >= _VIEW_CUBE_MIN_EDGE_AREA for panel in overlay.edge_panels)
+                assert all(
+                    panel.screen_area >= _VIEW_CUBE_MIN_CORNER_AREA
+                    for panel in overlay.corner_panels
+                )
+                assert len(overlay.hotspots) >= len(overlay.controls) + len(overlay.faces)
+
+
+def test_view_cube_face_on_views_keep_primary_face_and_hide_corner_slivers():
+    face_on_views = (
+        (-90.0, 0.0, "Front"),
+        (0.0, 0.0, "Right"),
+        (90.0, 0.0, "Back"),
+        (180.0, 0.0, "Left"),
+        (0.0, 90.0, "Top"),
+        (0.0, -90.0, "Bottom"),
+    )
+
+    for yaw, pitch, expected_face in face_on_views:
+        overlay = _build_view_cube_overlay(
+            _camera_state((0.0, 0.0, 0.0), 4.0, yaw, pitch),
+            900.0,
+            700.0,
+        )
+
+        assert [face.view_name for face in overlay.faces] == [expected_face]
+        assert len(overlay.edge_panels) == 4
+        assert not overlay.corner_panels
+        assert all(panel.screen_area >= _VIEW_CUBE_DOMINANT_EDGE_AREA for panel in overlay.edge_panels)
 
 
 def test_view_cube_labels_are_uppercase_and_bevels_are_darker_than_faces():
