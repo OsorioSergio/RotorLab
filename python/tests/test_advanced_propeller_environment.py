@@ -609,6 +609,29 @@ def test_opengl_viewport_initializes_empty_geometry_buffers(qtbot):
     assert viewport.format().samples() >= 8
 
 
+def test_opengl_viewport_keeps_full_surface_triangles_during_interaction(qtbot):
+    if not advanced_propeller_module._HAS_QT_OPENGL:
+        pytest.skip("Qt OpenGL modules are unavailable")
+
+    state = create_default_propeller_feature_state("opengl-full-surface-node", "Propeller")
+    result = PropellerBuildBridge().build_model(
+        PropellerBuildRequestDTO(
+            feature_state=state,
+            dirty_stages=list(ACTIVE_PROPELLER_STAGES),
+        )
+    )
+
+    viewport = advanced_propeller_module._OpenGLPropellerViewportWidget()
+    qtbot.addWidget(viewport)
+    viewport.set_preview_result(result)
+    viewport._begin_interaction()
+
+    assert viewport._interactive_preview
+    assert viewport._mesh_triangle_count > 0
+    assert viewport._mesh_interactive_triangle_count == viewport._mesh_triangle_count
+    assert viewport._mesh_interactive_triangle_blob == viewport._mesh_triangle_blob
+
+
 def test_build_service_reports_backend_missing(monkeypatch):
     monkeypatch.setattr(
         bridge_module,

@@ -2205,8 +2205,6 @@ class _SoftwarePropellerViewportWidget(QWidget):
         self._vertex_normals: list[tuple[float, float, float]] = []
         self._display_edges: list[_DisplayEdge] = []
         self._interactive_preview = False
-        self._static_face_budget = 24000
-        self._interactive_face_budget = 6000
         self._interaction_timer = QTimer(self)
         self._interaction_timer.setSingleShot(True)
         self._interaction_timer.setInterval(140)
@@ -2255,7 +2253,6 @@ class _SoftwarePropellerViewportWidget(QWidget):
         painter.setPen(QPen(self._border, 1))
         painter.drawRect(self.rect().adjusted(0, 0, -1, -1))
         camera = self._camera_state()
-        face_step = 1
         if self._preview_result is not None and self._preview_result.mesh.vertices and self._preview_result.mesh.faces:
             vertices = self._preview_result.mesh.vertices
             faces = self._preview_result.mesh.faces
@@ -2263,12 +2260,9 @@ class _SoftwarePropellerViewportWidget(QWidget):
                 self._project_point(point, camera.eye, camera.forward, camera.right, camera.up)
                 for point in vertices
             ]
-            target_faces = self._interactive_face_budget if self._interactive_preview else self._static_face_budget
-            face_step = max(1, math.ceil(len(faces) / max(1, target_faces)))
             show_wireframe = self._show_wireframe and not self._interactive_preview
             face_polygons: list[tuple[float, QPolygonF, QColor]] = []
-            for face_index in range(0, len(faces), face_step):
-                face = faces[face_index]
+            for face in faces:
                 projected = (
                     projected_vertices[face[0]],
                     projected_vertices[face[1]],
@@ -2358,15 +2352,7 @@ class _SoftwarePropellerViewportWidget(QWidget):
             painter.setPen(self._muted)
             painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "3D preview waiting for geometry.")
 
-        self._draw_overlay_chrome(
-            painter,
-            camera,
-            adaptive_text=(
-                None
-                if self._preview_result is None or face_step <= 1
-                else f"Adaptive preview: {math.ceil(len(self._preview_result.mesh.faces) / face_step):,} of {len(self._preview_result.mesh.faces):,} faces"
-            ),
-        )
+        self._draw_overlay_chrome(painter, camera)
 
     def mousePressEvent(self, event) -> None:  # type: ignore[override]
         self._last_pos = event.position().toPoint()
@@ -2634,7 +2620,6 @@ if _HAS_QT_OPENGL:
             self._drag_mode: str | None = None
             self._bounds_extent = 2.0
             self._interactive_preview = False
-            self._interactive_face_budget = 7000
             self._interaction_timer = QTimer(self)
             self._interaction_timer.setSingleShot(True)
             self._interaction_timer.setInterval(140)
@@ -2768,11 +2753,7 @@ if _HAS_QT_OPENGL:
             self._draw_overlay_chrome(
                 painter,
                 camera,
-                adaptive_text=(
-                    None
-                    if not self._interactive_preview or not self._mesh_interactive_triangle_count
-                    else f"Adaptive preview: {self._mesh_interactive_triangle_count // 3:,} of {self._mesh_triangle_count // 3:,} faces"
-                ),
+                adaptive_text=None,
             )
 
         def mousePressEvent(self, event) -> None:  # type: ignore[override]
@@ -3156,8 +3137,6 @@ if _HAS_QT_OPENGL:
             self._mesh_vertex_blob = mesh_vertices.tobytes()
 
             render_faces = self._render_geometry.faces
-            face_step = max(1, math.ceil(len(render_faces) / self._interactive_face_budget))
-            interactive_faces = render_faces[::face_step]
 
             triangle_indices = array("I")
             for a, b, c in render_faces:
@@ -3165,11 +3144,8 @@ if _HAS_QT_OPENGL:
             self._mesh_triangle_blob = triangle_indices.tobytes()
             self._mesh_triangle_count = len(triangle_indices)
 
-            interactive_triangle_indices = array("I")
-            for a, b, c in interactive_faces:
-                interactive_triangle_indices.extend([a, b, c])
-            self._mesh_interactive_triangle_blob = interactive_triangle_indices.tobytes()
-            self._mesh_interactive_triangle_count = len(interactive_triangle_indices)
+            self._mesh_interactive_triangle_blob = self._mesh_triangle_blob
+            self._mesh_interactive_triangle_count = self._mesh_triangle_count
 
             wire_indices = array("I")
             for a, b, c in faces:
