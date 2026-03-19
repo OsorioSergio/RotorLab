@@ -136,8 +136,8 @@ class PreviewSettings:
     span_samples: int = 18
     chord_samples: int = 36
     section_eta: float = 0.7
-    tessellation_rows: int = 40
-    tessellation_cols: int = 72
+    tessellation_rows: int = 64
+    tessellation_cols: int = 120
     show_mesh: bool = True
     show_wireframe: bool = False
     show_sections: bool = False
@@ -160,8 +160,8 @@ class PreviewSettings:
             span_samples=int(payload.get("span_samples", 18)),
             chord_samples=int(payload.get("chord_samples", 36)),
             section_eta=float(payload.get("section_eta", 0.7)),
-            tessellation_rows=int(payload.get("tessellation_rows", 40)),
-            tessellation_cols=int(payload.get("tessellation_cols", 72)),
+            tessellation_rows=int(payload.get("tessellation_rows", 64)),
+            tessellation_cols=int(payload.get("tessellation_cols", 120)),
             show_mesh=bool(payload.get("show_mesh", True)),
             show_wireframe=bool(payload.get("show_wireframe", False)),
             show_sections=bool(payload.get("show_sections", False)),

@@ -20,8 +20,12 @@ from rotorlab_app.ui.advanced_propeller import (
     AdvancedPropellerWorkspace,
     _OVERLAY_DEPTH_BIAS,
     _OVERLAY_PASS_CONFIG,
+    _orbit_camera_angles,
     _SURFACE_PASS_CONFIG,
     _VIEW_CUBE_DOMINANT_EDGE_AREA,
+    _VIEW_CUBE_FACE_DEFINITIONS,
+    _VIEW_CUBE_LABEL_ATLAS_COLUMNS,
+    _VIEW_CUBE_LABEL_ATLAS_ROWS,
     _VIEW_CUBE_MIN_CORNER_AREA,
     _VIEW_CUBE_MIN_EDGE_AREA,
     _VIEWPORT_CUBE_BEVEL_HEX,
@@ -37,8 +41,10 @@ from rotorlab_app.ui.advanced_propeller import (
     _build_view_cube_overlay,
     _camera_state,
     _build_crease_aware_render_geometry,
+    _build_view_cube_label_opengl_geometry,
     _hit_test_view_cube_overlay,
     _named_view_eye_direction,
+    _view_cube_label_atlas,
     _view_cube_label_image,
     _view_cube_label_transform,
 )
@@ -193,6 +199,8 @@ def test_default_preview_settings_favor_surface_rendering():
     assert state.preview_settings.show_mesh
     assert not state.preview_settings.show_wireframe
     assert not state.preview_settings.show_sections
+    assert state.preview_settings.tessellation_rows == 64
+    assert state.preview_settings.tessellation_cols == 120
 
 
 def test_named_view_mapping_uses_true_model_axes():
@@ -202,6 +210,18 @@ def test_named_view_mapping_uses_true_model_axes():
     iso = _named_view_eye_direction("Top-Front-Right")
     expected = 1.0 / math.sqrt(3.0)
     assert iso == pytest.approx((expected, -expected, expected))
+
+
+def test_orbit_camera_angles_preserve_roll_during_standard_drag():
+    yaw, pitch, roll = _orbit_camera_angles(-45.0, 35.26438968, 0.0, 6.0, -4.0)
+    assert yaw != pytest.approx(-45.0)
+    assert pitch != pytest.approx(35.26438968)
+    assert roll == pytest.approx(0.0)
+
+    yaw, pitch, roll = _orbit_camera_angles(-45.0, 35.26438968, 18.0, 6.0, -4.0)
+    assert yaw != pytest.approx(-45.0)
+    assert pitch != pytest.approx(35.26438968)
+    assert roll == pytest.approx(18.0)
 
 
 def test_view_cube_overlay_exposes_visible_faces_and_hit_targets():
@@ -321,10 +341,22 @@ def test_view_cube_default_label_quads_have_readable_screen_extent():
     assert front_height > 18.0
 
 
-def test_view_cube_label_images_render_at_supersampled_resolution():
+def test_view_cube_label_images_render_at_supersampled_resolution(qapp):
     image = _view_cube_label_image("TOP", "Segoe UI")
     assert image.width() == _VIEW_CUBE_LABEL_TEXTURE_SIZE
     assert image.height() == _VIEW_CUBE_LABEL_TEXTURE_SIZE
+
+
+def test_view_cube_label_atlas_packs_all_face_tiles(qapp):
+    atlas = _view_cube_label_atlas(qapp.font().family())
+    assert atlas.width() == _VIEW_CUBE_LABEL_ATLAS_COLUMNS * _VIEW_CUBE_LABEL_TEXTURE_SIZE
+    assert atlas.height() == _VIEW_CUBE_LABEL_ATLAS_ROWS * _VIEW_CUBE_LABEL_TEXTURE_SIZE
+
+
+def test_view_cube_label_opengl_geometry_builds_one_textured_quad_per_face():
+    geometry = _build_view_cube_label_opengl_geometry(0.77)
+    assert geometry.vertex_count == len(_VIEW_CUBE_FACE_DEFINITIONS) * 6
+    assert len(geometry.vertex_blob) == geometry.vertex_count * 5 * 4
 
 
 def test_view_cube_projection_stays_within_overlay_bounds_across_orientations():
@@ -569,6 +601,12 @@ def test_opengl_viewport_initializes_empty_geometry_buffers(qtbot):
     assert viewport._mesh_triangle_blob == b""
     assert viewport._mesh_interactive_triangle_blob == b""
     assert viewport._mesh_wire_blob == b""
+    assert viewport._view_cube_geometry.face_vertex_count > 0
+    assert viewport._view_cube_geometry.edge_vertex_count > 0
+    assert viewport._view_cube_geometry.corner_vertex_count > 0
+    assert viewport._view_cube_geometry.line_vertex_count > 0
+    assert viewport._view_cube_label_geometry.vertex_count > 0
+    assert viewport.format().samples() >= 8
 
 
 def test_build_service_reports_backend_missing(monkeypatch):
@@ -690,6 +728,29 @@ def test_view_cube_rotate_and_roll_controls_update_camera_without_drag(window, q
 
     assert canvas._drag_mode is None
     assert abs(canvas._roll) > 1.0
+
+
+def test_viewport_orbit_drag_keeps_default_roll_stable(window, qtbot):
+    node_id = _drop_propeller_module(window)
+    assert window.orchestrate.scene.activate_node(node_id)
+    qtbot.wait(200)
+
+    workspace = window.workspace_stack.currentWidget()
+    assert isinstance(workspace, AdvancedPropellerWorkspace)
+    _wait_for_result(qtbot, workspace)
+
+    canvas = workspace.viewport._canvas
+    start = QPoint(round(canvas.width() * 0.4), round(canvas.height() * 0.45))
+    end = QPoint(start.x() + 24, start.y() + 12)
+
+    qtbot.mousePress(canvas, Qt.MouseButton.LeftButton, pos=start)
+    qtbot.mouseMove(canvas, pos=end)
+    qtbot.mouseRelease(canvas, Qt.MouseButton.LeftButton, pos=end)
+
+    assert canvas._drag_mode is None
+    assert canvas._yaw != pytest.approx(-45.0)
+    assert canvas._pitch != pytest.approx(35.26438968)
+    assert canvas._roll == pytest.approx(0.0)
 
 
 def test_reset_view_restores_default_iso_after_named_view_snap(window, qtbot):

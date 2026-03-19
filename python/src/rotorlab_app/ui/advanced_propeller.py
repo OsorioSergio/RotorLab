@@ -9,7 +9,7 @@ from functools import lru_cache
 from pathlib import Path
 
 from PyQt6.QtCore import QPoint, QPointF, QRectF, Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QColor, QFont, QImage, QLinearGradient, QMatrix4x4, QPainter, QPainterPath, QPen, QPixmap, QPolygonF, QTransform, QVector3D, QVector4D
+from PyQt6.QtGui import QColor, QFont, QFontMetricsF, QImage, QLinearGradient, QMatrix4x4, QPainter, QPainterPath, QPen, QPixmap, QPolygonF, QSurfaceFormat, QTransform, QVector2D, QVector3D, QVector4D
 from PyQt6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -43,6 +43,10 @@ try:
         QOpenGLVersionFunctionsFactory,
         QOpenGLVersionProfile,
     )
+    try:
+        from PyQt6.QtOpenGL import QOpenGLTexture
+    except ImportError:  # pragma: no cover - depends on Qt installation
+        QOpenGLTexture = None  # type: ignore[assignment]
     from PyQt6.QtOpenGLWidgets import QOpenGLWidget
 
     _HAS_QT_OPENGL = True
@@ -50,6 +54,7 @@ except ImportError:  # pragma: no cover - depends on Qt installation
     QOpenGLBuffer = None  # type: ignore[assignment]
     QOpenGLShader = None  # type: ignore[assignment]
     QOpenGLShaderProgram = None  # type: ignore[assignment]
+    QOpenGLTexture = None  # type: ignore[assignment]
     QOpenGLVersionFunctionsFactory = None  # type: ignore[assignment]
     QOpenGLVersionProfile = None  # type: ignore[assignment]
     QOpenGLWidget = None  # type: ignore[assignment]
@@ -80,6 +85,7 @@ GL_DEPTH_BUFFER_BIT = 0x00000100
 GL_DEPTH_TEST = 0x0B71
 GL_BLEND = 0x0BE2
 GL_CULL_FACE = 0x0B44
+GL_SCISSOR_TEST = 0x0C11
 GL_SRC_ALPHA = 0x0302
 GL_ONE_MINUS_SRC_ALPHA = 0x0303
 GL_TRIANGLES = 0x0004
@@ -196,6 +202,35 @@ class _ViewCubeBodyPanel3D:
     label_quad: tuple[tuple[float, float, float], ...] | None = None
 
 
+@dataclass(frozen=True)
+class _ViewCubeProjectionState:
+    center: tuple[float, float]
+    overlay_eye: tuple[float, float, float]
+    projection_scale: float
+    pixel_scale: float
+    near_depth: float
+    far_depth: float
+
+
+@dataclass(frozen=True)
+class _ViewCubeOpenGLGeometry:
+    triangle_blob: bytes
+    face_vertex_offset: int
+    face_vertex_count: int
+    edge_vertex_offset: int
+    edge_vertex_count: int
+    corner_vertex_offset: int
+    corner_vertex_count: int
+    line_blob: bytes
+    line_vertex_count: int
+
+
+@dataclass(frozen=True)
+class _ViewCubeLabelOpenGLGeometry:
+    vertex_blob: bytes
+    vertex_count: int
+
+
 _CREASE_ANGLE_DEGREES = 45.0
 _SURFACE_PASS_CONFIG = _RenderPassConfig(
     alpha=1.0,
@@ -233,27 +268,31 @@ _VIEWPORT_LIGHT_DIFFUSE = 0.12
 _TRIAD_SIZE = 46.0
 _TRIAD_PADDING = 18.0
 _TRIAD_ARROW_SIZE = 6.0
-_VIEW_CUBE_SIZE = 94.0
+_VIEW_CUBE_SIZE = 120.0
 _VIEW_CUBE_PADDING = 18.0
-_VIEW_CUBE_WIDGET_WIDTH = 150.0
-_VIEW_CUBE_WIDGET_HEIGHT = 150.0
-_VIEW_CUBE_WIDGET_INSET_X = 66.0
-_VIEW_CUBE_WIDGET_INSET_Y = 75.0
+_VIEW_CUBE_WIDGET_WIDTH = 190.0
+_VIEW_CUBE_WIDGET_HEIGHT = 190.0
+_VIEW_CUBE_WIDGET_INSET_X = 84.0
+_VIEW_CUBE_WIDGET_INSET_Y = 95.0
 _VIEW_CUBE_CHAMFER_RATIO = 0.23
 _VIEW_CUBE_CORNER_RADIUS = 9.0
 _VIEW_CUBE_EDGE_RADIUS = 7.0
 _VIEW_CUBE_FOV_DEGREES = 28.0
 _VIEW_CUBE_CAMERA_DISTANCE = 6.2
 _VIEW_CUBE_FIT_FRACTION = 0.84
-_VIEW_CUBE_CONTROL_SIZE = 15.0
-_VIEW_CUBE_CONTROL_GAP = 7.0
-_VIEW_CUBE_HOME_SIZE = 18.0
-_VIEW_CUBE_ROLL_WIDTH = 22.0
-_VIEW_CUBE_ROLL_HEIGHT = 14.0
+_VIEW_CUBE_CONTROL_SIZE = 18.0
+_VIEW_CUBE_CONTROL_GAP = 8.0
+_VIEW_CUBE_HOME_SIZE = 22.0
+_VIEW_CUBE_ROLL_WIDTH = 28.0
+_VIEW_CUBE_ROLL_HEIGHT = 18.0
+_VIEW_CUBE_GL_LINE_DEPTH_BIAS = 0.003
+_VIEW_CUBE_LABEL_GL_DEPTH_BIAS = 0.0022
 _VIEW_CUBE_LABEL_MARGIN = 0.07
 _VIEW_CUBE_LABEL_HEIGHT = 0.40
 _VIEW_CUBE_LABEL_PIXEL_SIZE = 128
-_VIEW_CUBE_LABEL_TEXTURE_SIZE = 512
+_VIEW_CUBE_LABEL_TEXTURE_SIZE = 1024
+_VIEW_CUBE_LABEL_ATLAS_COLUMNS = 3
+_VIEW_CUBE_LABEL_ATLAS_ROWS = 2
 _VIEW_CUBE_MIN_FACE_AREA = 2.0
 _VIEW_CUBE_MIN_EDGE_AREA = 1.5
 _VIEW_CUBE_MIN_CORNER_AREA = 0.75
@@ -491,6 +530,26 @@ def _rotate_camera_angles(
     rotated_eye_direction = _rotate_vector(camera.eye_direction, axis, degrees)
     rotated_up = _rotate_vector(camera.up, axis, degrees)
     return _camera_angles_from_eye_direction(rotated_eye_direction, rotated_up)
+
+
+def _orbit_camera_angles(
+    yaw_deg: float,
+    pitch_deg: float,
+    roll_deg: float,
+    horizontal_degrees: float,
+    vertical_degrees: float,
+) -> tuple[float, float, float]:
+    camera = _camera_state((0.0, 0.0, 0.0), 1.0, yaw_deg, pitch_deg, roll_deg)
+    next_yaw = yaw_deg
+    next_pitch = pitch_deg
+    if abs(horizontal_degrees) > 1e-6:
+        rotated_eye_direction = _rotate_vector(camera.eye_direction, camera.up, horizontal_degrees)
+        next_yaw, next_pitch, _ = _camera_angles_from_eye_direction(rotated_eye_direction, camera.up)
+    if abs(vertical_degrees) > 1e-6:
+        orbit_camera = _camera_state((0.0, 0.0, 0.0), 1.0, next_yaw, next_pitch, roll_deg)
+        rotated_eye_direction = _rotate_vector(orbit_camera.eye_direction, orbit_camera.right, vertical_degrees)
+        next_yaw, next_pitch, _ = _camera_angles_from_eye_direction(rotated_eye_direction, orbit_camera.up)
+    return next_yaw, next_pitch, roll_deg
 
 
 def _named_view_eye_direction(view_name: str) -> tuple[float, float, float]:
@@ -818,12 +877,11 @@ def _view_cube_widget_rect(
     )
 
 
-def _project_view_cube_points(
-    points: tuple[tuple[float, float, float], ...],
+def _view_cube_projection_state(
     camera: _ViewportCameraState,
     center: tuple[float, float],
     size: float,
-) -> tuple[tuple[float, float, float], ...]:
+) -> _ViewCubeProjectionState:
     projection_scale = 1.0 / math.tan(math.radians(_VIEW_CUBE_FOV_DEGREES) * 0.5)
     max_extent = math.sqrt(3.0)
     max_projected_extent = (
@@ -833,17 +891,33 @@ def _project_view_cube_points(
     )
     fit_size = size * _VIEW_CUBE_FIT_FRACTION
     pixel_scale = (fit_size * 0.5) / max(max_projected_extent, 1e-6)
-    overlay_eye = _scale(camera.eye_direction, _VIEW_CUBE_CAMERA_DISTANCE)
+    return _ViewCubeProjectionState(
+        center=center,
+        overlay_eye=_scale(camera.eye_direction, _VIEW_CUBE_CAMERA_DISTANCE),
+        projection_scale=projection_scale,
+        pixel_scale=pixel_scale,
+        near_depth=max(0.05, _VIEW_CUBE_CAMERA_DISTANCE - max_extent),
+        far_depth=_VIEW_CUBE_CAMERA_DISTANCE + max_extent,
+    )
+
+
+def _project_view_cube_points(
+    points: tuple[tuple[float, float, float], ...],
+    camera: _ViewportCameraState,
+    center: tuple[float, float],
+    size: float,
+) -> tuple[tuple[float, float, float], ...]:
+    projection = _view_cube_projection_state(camera, center, size)
     projected_points: list[tuple[float, float, float]] = []
     for point in points:
-        relative = _sub(point, overlay_eye)
+        relative = _sub(point, projection.overlay_eye)
         cam_x = _dot(relative, camera.right)
         cam_y = _dot(relative, camera.up)
         cam_z = max(0.05, _dot(relative, camera.forward))
         projected_points.append(
             (
-                center[0] + (cam_x * projection_scale / cam_z) * pixel_scale,
-                center[1] - (cam_y * projection_scale / cam_z) * pixel_scale,
+                projection.center[0] + (cam_x * projection.projection_scale / cam_z) * projection.pixel_scale,
+                projection.center[1] - (cam_y * projection.projection_scale / cam_z) * projection.pixel_scale,
                 cam_z,
             )
         )
@@ -893,6 +967,7 @@ def _view_cube_label_quad_3d(
     )
 
 
+@lru_cache(maxsize=8)
 def _build_view_cube_body_panels(inset: float) -> tuple[_ViewCubeBodyPanel3D, ...]:
     panels: list[_ViewCubeBodyPanel3D] = []
     for definition in _VIEW_CUBE_FACE_DEFINITIONS:
@@ -949,6 +1024,126 @@ def _build_view_cube_body_panels(inset: float) -> tuple[_ViewCubeBodyPanel3D, ..
                     )
                 )
     return tuple(panels)
+
+
+@lru_cache(maxsize=8)
+def _build_view_cube_opengl_geometry(inset: float) -> _ViewCubeOpenGLGeometry:
+    triangle_vertices = array("f")
+    line_vertices = array("f")
+    face_vertex_offset = 0
+    face_vertex_count = 0
+    edge_vertex_offset = 0
+    edge_vertex_count = 0
+    corner_vertex_offset = 0
+    corner_vertex_count = 0
+
+    current_vertex_count = 0
+    for panel in _build_view_cube_body_panels(inset):
+        if panel.kind == "face":
+            face_vertex_offset = current_vertex_count if face_vertex_count == 0 else face_vertex_offset
+        elif panel.kind == "edge":
+            edge_vertex_offset = current_vertex_count if edge_vertex_count == 0 else edge_vertex_offset
+        else:
+            corner_vertex_offset = current_vertex_count if corner_vertex_count == 0 else corner_vertex_offset
+
+        for triangle_index in range(1, len(panel.points) - 1):
+            for point in (panel.points[0], panel.points[triangle_index], panel.points[triangle_index + 1]):
+                triangle_vertices.extend(
+                    [
+                        float(point[0]),
+                        float(point[1]),
+                        float(point[2]),
+                        float(panel.normal[0]),
+                        float(panel.normal[1]),
+                        float(panel.normal[2]),
+                    ]
+                )
+                current_vertex_count += 1
+                if panel.kind == "face":
+                    face_vertex_count += 1
+                elif panel.kind == "edge":
+                    edge_vertex_count += 1
+                else:
+                    corner_vertex_count += 1
+
+        for index, point in enumerate(panel.points):
+            next_point = panel.points[(index + 1) % len(panel.points)]
+            line_vertices.extend(
+                [
+                    float(point[0]),
+                    float(point[1]),
+                    float(point[2]),
+                    float(next_point[0]),
+                    float(next_point[1]),
+                    float(next_point[2]),
+                ]
+            )
+
+    return _ViewCubeOpenGLGeometry(
+        triangle_blob=triangle_vertices.tobytes(),
+        face_vertex_offset=face_vertex_offset,
+        face_vertex_count=face_vertex_count,
+        edge_vertex_offset=edge_vertex_offset,
+        edge_vertex_count=edge_vertex_count,
+        corner_vertex_offset=corner_vertex_offset,
+        corner_vertex_count=corner_vertex_count,
+        line_blob=line_vertices.tobytes(),
+        line_vertex_count=len(line_vertices) // 3,
+    )
+
+
+def _view_cube_label_tile_uv(
+    face_index: int,
+) -> tuple[tuple[float, float], tuple[float, float], tuple[float, float], tuple[float, float]]:
+    atlas_width = _VIEW_CUBE_LABEL_ATLAS_COLUMNS * _VIEW_CUBE_LABEL_TEXTURE_SIZE
+    atlas_height = _VIEW_CUBE_LABEL_ATLAS_ROWS * _VIEW_CUBE_LABEL_TEXTURE_SIZE
+    column = face_index % _VIEW_CUBE_LABEL_ATLAS_COLUMNS
+    row = face_index // _VIEW_CUBE_LABEL_ATLAS_COLUMNS
+    gl_row = _VIEW_CUBE_LABEL_ATLAS_ROWS - 1 - row
+    texel_u = 0.5 / max(float(atlas_width), 1.0)
+    texel_v = 0.5 / max(float(atlas_height), 1.0)
+    u0 = column / _VIEW_CUBE_LABEL_ATLAS_COLUMNS + texel_u
+    u1 = (column + 1) / _VIEW_CUBE_LABEL_ATLAS_COLUMNS - texel_u
+    v0 = gl_row / _VIEW_CUBE_LABEL_ATLAS_ROWS + texel_v
+    v1 = (gl_row + 1) / _VIEW_CUBE_LABEL_ATLAS_ROWS - texel_v
+    return (
+        (u0, v1),
+        (u1, v1),
+        (u1, v0),
+        (u0, v0),
+    )
+
+
+@lru_cache(maxsize=8)
+def _build_view_cube_label_opengl_geometry(inset: float) -> _ViewCubeLabelOpenGLGeometry:
+    vertices = array("f")
+    face_panels = {
+        panel.view_name: panel
+        for panel in _build_view_cube_body_panels(inset)
+        if panel.kind == "face" and panel.label_quad is not None
+    }
+    for face_index, definition in enumerate(_VIEW_CUBE_FACE_DEFINITIONS):
+        panel = face_panels.get(definition.view_name)
+        if panel is None or panel.label_quad is None:
+            continue
+        corners = tuple(panel.label_quad)
+        texcoords = _view_cube_label_tile_uv(face_index)
+        for vertex_index in (0, 1, 2, 0, 2, 3):
+            point = corners[vertex_index]
+            uv = texcoords[vertex_index]
+            vertices.extend(
+                [
+                    float(point[0]),
+                    float(point[1]),
+                    float(point[2]),
+                    float(uv[0]),
+                    float(uv[1]),
+                ]
+            )
+    return _ViewCubeLabelOpenGLGeometry(
+        vertex_blob=vertices.tobytes(),
+        vertex_count=len(vertices) // 5,
+    )
 
 
 def _view_cube_edge_strip_points(
@@ -1179,7 +1374,16 @@ def _draw_axis_triad_overlay(
 def _draw_view_cube_overlay(
     painter: QPainter,
     overlay: _ViewCubeOverlay,
+    draw_body: bool = True,
+    draw_labels: bool = True,
 ) -> None:
+    painter.save()
+    # Keep the cube overlay antialiased even while the main viewport drops quality
+    # during interaction; the projected face polygons are small enough that aliasing
+    # can make bevels appear to pop in and out.
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    painter.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
+    painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
     body_panels: list[tuple[float, str, str, object]] = []
     body_panels.extend((panel.depth, "edge", panel.view_name, panel) for panel in overlay.edge_panels)
     body_panels.extend((panel.depth, "corner", panel.view_name, panel) for panel in overlay.corner_panels)
@@ -1189,36 +1393,41 @@ def _draw_view_cube_overlay(
         key=lambda item: (-round(item[0], 6), kind_priority.get(item[1], 99), item[2])
     )
 
-    painter.setPen(Qt.PenStyle.NoPen)
-    for _depth, kind, _view_name, panel in body_panels:
-        if kind == "face":
-            assert isinstance(panel, _ViewCubeFaceOverlay)
-            painter.setBrush(_color_with_brightness(QColor(_VIEWPORT_CUBE_FACE_HEX), panel.brightness))
-            painter.drawPolygon(_polygon_from_points(panel.polygon))
-            _draw_view_cube_face_label(painter, panel)
-        elif kind == "edge":
-            assert isinstance(panel, _ViewCubePanelOverlay)
-            painter.setBrush(_color_with_brightness(QColor(_VIEWPORT_CUBE_BEVEL_HEX), panel.brightness))
-            painter.drawPolygon(_polygon_from_points(panel.polygon))
-        else:
-            assert isinstance(panel, _ViewCubePanelOverlay)
-            painter.setBrush(_color_with_brightness(QColor(_VIEWPORT_CUBE_CORNER_HEX), panel.brightness))
-            painter.drawPolygon(_polygon_from_points(panel.polygon))
+    if draw_body:
+        painter.setPen(Qt.PenStyle.NoPen)
+        for _depth, kind, _view_name, panel in body_panels:
+            if kind == "face":
+                assert isinstance(panel, _ViewCubeFaceOverlay)
+                painter.setBrush(_color_with_brightness(QColor(_VIEWPORT_CUBE_FACE_HEX), panel.brightness))
+                painter.drawPolygon(_polygon_from_points(panel.polygon))
+            elif kind == "edge":
+                assert isinstance(panel, _ViewCubePanelOverlay)
+                painter.setBrush(_color_with_brightness(QColor(_VIEWPORT_CUBE_BEVEL_HEX), panel.brightness))
+                painter.drawPolygon(_polygon_from_points(panel.polygon))
+            else:
+                assert isinstance(panel, _ViewCubePanelOverlay)
+                painter.setBrush(_color_with_brightness(QColor(_VIEWPORT_CUBE_CORNER_HEX), panel.brightness))
+                painter.drawPolygon(_polygon_from_points(panel.polygon))
 
-    outline_color = QColor(_VIEWPORT_CUBE_EDGE_HEX)
-    outline_color.setAlpha(208)
-    outline_pen = QPen(outline_color, 0.8)
-    outline_pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
-    outline_pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-    painter.setPen(outline_pen)
-    painter.setBrush(Qt.BrushStyle.NoBrush)
-    for _depth, _kind, _view_name, panel in body_panels:
-        polygon = panel.polygon if isinstance(panel, (_ViewCubeFaceOverlay, _ViewCubePanelOverlay)) else ()
-        if polygon and panel.screen_area >= _VIEW_CUBE_MIN_OUTLINE_AREA:
-            painter.drawPolygon(_polygon_from_points(polygon))
+        outline_color = QColor(_VIEWPORT_CUBE_EDGE_HEX)
+        outline_color.setAlpha(208)
+        outline_pen = QPen(outline_color, 0.8)
+        outline_pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        outline_pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        painter.setPen(outline_pen)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        for _depth, _kind, _view_name, panel in body_panels:
+            polygon = panel.polygon if isinstance(panel, (_ViewCubeFaceOverlay, _ViewCubePanelOverlay)) else ()
+            if polygon and panel.screen_area >= _VIEW_CUBE_MIN_OUTLINE_AREA:
+                painter.drawPolygon(_polygon_from_points(polygon))
+
+    if draw_labels:
+        for face in overlay.faces:
+            _draw_view_cube_face_label(painter, face)
 
     for control in overlay.controls:
         _draw_view_cube_control(painter, control)
+    painter.restore()
 
 
 def _view_cube_label_transform(face: _ViewCubeFaceOverlay) -> QTransform:
@@ -1306,20 +1515,74 @@ def _view_cube_label_image(label: str, font_family: str) -> QImage:
     return image
 
 
+def _view_cube_label_font_family() -> str:
+    app = QApplication.instance()
+    return app.font().family() if app is not None else QFont().family()
+
+
+@lru_cache(maxsize=16)
+def _view_cube_label_atlas(font_family: str) -> QImage:
+    atlas = QImage(
+        _VIEW_CUBE_LABEL_ATLAS_COLUMNS * _VIEW_CUBE_LABEL_TEXTURE_SIZE,
+        _VIEW_CUBE_LABEL_ATLAS_ROWS * _VIEW_CUBE_LABEL_TEXTURE_SIZE,
+        QImage.Format.Format_ARGB32_Premultiplied,
+    )
+    atlas.fill(Qt.GlobalColor.transparent)
+    atlas_painter = QPainter(atlas)
+    atlas_painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    atlas_painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+    for face_index, definition in enumerate(_VIEW_CUBE_FACE_DEFINITIONS):
+        column = face_index % _VIEW_CUBE_LABEL_ATLAS_COLUMNS
+        row = face_index // _VIEW_CUBE_LABEL_ATLAS_COLUMNS
+        atlas_painter.drawImage(
+            column * _VIEW_CUBE_LABEL_TEXTURE_SIZE,
+            row * _VIEW_CUBE_LABEL_TEXTURE_SIZE,
+            _view_cube_label_image(definition.view_name.upper(), font_family),
+        )
+    atlas_painter.end()
+    return atlas
+
+
 def _draw_view_cube_face_label(
     painter: QPainter,
     face: _ViewCubeFaceOverlay,
 ) -> None:
-    transform = _view_cube_label_transform(face)
-    label_path = _view_cube_label_path(face, painter)
-
     painter.save()
     painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-    painter.setTransform(transform, True)
-    painter.setClipRect(QRectF(0.0, 0.0, 1.0, 1.0))
-    painter.setPen(Qt.PenStyle.NoPen)
-    painter.setBrush(_color_with_brightness(QColor(_VIEWPORT_CUBE_TEXT_HEX), 0.98))
-    painter.drawPath(label_path)
+    painter.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
+    clip_path = QPainterPath()
+    clip_path.addPolygon(_polygon_from_points(face.polygon))
+    painter.setClipPath(clip_path, Qt.ClipOperation.IntersectClip)
+
+    label_bounds = _polygon_bounds([face.label_quad])
+    max_width = max(8.0, label_bounds.width() * 0.92)
+    max_height = max(8.0, label_bounds.height() * 0.86)
+
+    font = QFont(painter.font())
+    font.setWeight(QFont.Weight.Bold)
+    pixel_size = max(8, int(math.floor(max_height)))
+    while pixel_size > 7:
+        font.setPixelSize(pixel_size)
+        metrics = QFontMetricsF(font)
+        text_rect = metrics.boundingRect(face.label)
+        if text_rect.width() <= max_width and text_rect.height() <= max_height:
+            break
+        pixel_size -= 1
+
+    painter.setFont(font)
+    shadow_bounds = label_bounds.translated(0.8, 0.8)
+    painter.setPen(QColor(255, 255, 255, 168))
+    painter.drawText(
+        shadow_bounds,
+        int(Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignVCenter),
+        face.label,
+    )
+    painter.setPen(_color_with_brightness(QColor(_VIEWPORT_CUBE_TEXT_HEX), 0.98))
+    painter.drawText(
+        label_bounds,
+        int(Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignVCenter),
+        face.label,
+    )
     painter.restore()
 
 
@@ -2131,18 +2394,11 @@ class _SoftwarePropellerViewportWidget(QWidget):
         delta = position - self._last_pos
         self._last_pos = position
         if self._drag_mode == "orbit":
-            self._yaw, self._pitch, self._roll = _rotate_camera_angles(
+            self._yaw, self._pitch, self._roll = _orbit_camera_angles(
                 self._yaw,
                 self._pitch,
                 self._roll,
-                "screen_up",
                 delta.x() * 0.6,
-            )
-            self._yaw, self._pitch, self._roll = _rotate_camera_angles(
-                self._yaw,
-                self._pitch,
-                self._roll,
-                "screen_right",
                 -delta.y() * 0.4,
             )
         else:
@@ -2347,6 +2603,13 @@ if _HAS_QT_OPENGL:
     class _OpenGLPropellerViewportWidget(QOpenGLWidget):
         def __init__(self, parent: QWidget | None = None) -> None:
             super().__init__(parent)
+            surface_format = QSurfaceFormat()
+            surface_format.setRenderableType(QSurfaceFormat.RenderableType.OpenGL)
+            surface_format.setVersion(2, 0)
+            surface_format.setProfile(QSurfaceFormat.OpenGLContextProfile.NoProfile)
+            surface_format.setDepthBufferSize(24)
+            surface_format.setSamples(8)
+            self.setFormat(surface_format)
             self.setObjectName("PropellerViewport")
             self.setMinimumWidth(320)
             self.setMinimumHeight(320)
@@ -2391,9 +2654,18 @@ if _HAS_QT_OPENGL:
             self._display_edge_count = 0
             self._section_ranges: list[tuple[int, int]] = []
             self._display_edges: list[_DisplayEdge] = []
+            self._view_cube_geometry = _build_view_cube_opengl_geometry(
+                max(0.05, 1.0 - _VIEW_CUBE_CHAMFER_RATIO)
+            )
+            self._view_cube_label_geometry = _build_view_cube_label_opengl_geometry(
+                max(0.05, 1.0 - _VIEW_CUBE_CHAMFER_RATIO)
+            )
 
             self._mesh_program: QOpenGLShaderProgram | None = None
             self._line_program: QOpenGLShaderProgram | None = None
+            self._view_cube_program: QOpenGLShaderProgram | None = None
+            self._view_cube_line_program: QOpenGLShaderProgram | None = None
+            self._view_cube_label_program: QOpenGLShaderProgram | None = None
             self._mesh_vertex_buffer: QOpenGLBuffer | None = None
             self._line_vertex_buffer: QOpenGLBuffer | None = None
             self._mesh_index_buffer: QOpenGLBuffer | None = None
@@ -2401,6 +2673,10 @@ if _HAS_QT_OPENGL:
             self._mesh_wire_index_buffer: QOpenGLBuffer | None = None
             self._display_edge_index_buffer: QOpenGLBuffer | None = None
             self._section_vertex_buffer: QOpenGLBuffer | None = None
+            self._view_cube_vertex_buffer: QOpenGLBuffer | None = None
+            self._view_cube_line_buffer: QOpenGLBuffer | None = None
+            self._view_cube_label_buffer: QOpenGLBuffer | None = None
+            self._view_cube_label_texture: QOpenGLTexture | None = None
             self._gl = None
             self._gl_ready = False
             self._gpu_dirty = False
@@ -2447,6 +2723,7 @@ if _HAS_QT_OPENGL:
             self._gl.glDisable(GL_CULL_FACE)
             self._create_programs()
             self._create_buffers()
+            self._create_view_cube_label_texture()
             self._gl_ready = True
             self._upload_buffers()
 
@@ -2476,6 +2753,7 @@ if _HAS_QT_OPENGL:
                 self._draw_overlays(gl, mvp_matrix)
                 gl.glDepthMask(True)
                 gl.glDisable(GL_BLEND)
+            self._draw_view_cube(gl, camera)
             painter.endNativePainting()
 
             painter.setPen(QPen(self._border, 1))
@@ -2523,18 +2801,11 @@ if _HAS_QT_OPENGL:
             delta = position - self._last_pos
             self._last_pos = position
             if self._drag_mode == "orbit":
-                self._yaw, self._pitch, self._roll = _rotate_camera_angles(
+                self._yaw, self._pitch, self._roll = _orbit_camera_angles(
                     self._yaw,
                     self._pitch,
                     self._roll,
-                    "screen_up",
                     delta.x() * 0.6,
-                )
-                self._yaw, self._pitch, self._roll = _rotate_camera_angles(
-                    self._yaw,
-                    self._pitch,
-                    self._roll,
-                    "screen_right",
                     -delta.y() * 0.4,
                 )
             else:
@@ -2645,14 +2916,175 @@ if _HAS_QT_OPENGL:
             line_program.bindAttributeLocation("a_position", 0)
             line_program.link()
 
+            view_cube_program = QOpenGLShaderProgram(self)
+            view_cube_program.addShaderFromSourceCode(
+                QOpenGLShader.ShaderTypeBit.Vertex,
+                """
+                #version 120
+                attribute vec3 a_position;
+                attribute vec3 a_normal;
+                uniform vec3 u_camera_right;
+                uniform vec3 u_camera_up;
+                uniform vec3 u_camera_forward;
+                uniform vec3 u_overlay_eye;
+                uniform vec2 u_widget_size;
+                uniform vec2 u_cube_center;
+                uniform float u_projection_scale;
+                uniform float u_pixel_scale;
+                uniform float u_near_depth;
+                uniform float u_far_depth;
+                varying vec3 v_normal;
+                void main() {
+                    vec3 relative = a_position - u_overlay_eye;
+                    float cam_x = dot(relative, u_camera_right);
+                    float cam_y = dot(relative, u_camera_up);
+                    float cam_z = max(0.05, dot(relative, u_camera_forward));
+                    float screen_x = u_cube_center.x + (cam_x * u_projection_scale / cam_z) * u_pixel_scale;
+                    float screen_y = u_cube_center.y - (cam_y * u_projection_scale / cam_z) * u_pixel_scale;
+                    float ndc_x = (screen_x / max(u_widget_size.x, 1.0)) * 2.0 - 1.0;
+                    float ndc_y = 1.0 - (screen_y / max(u_widget_size.y, 1.0)) * 2.0;
+                    float depth_t = clamp((cam_z - u_near_depth) / max(u_far_depth - u_near_depth, 0.0001), 0.0, 1.0);
+                    float ndc_z = depth_t * 2.0 - 1.0;
+                    gl_Position = vec4(ndc_x, ndc_y, ndc_z, 1.0);
+                    v_normal = normalize(a_normal);
+                }
+                """,
+            )
+            view_cube_program.addShaderFromSourceCode(
+                QOpenGLShader.ShaderTypeBit.Fragment,
+                """
+                #version 120
+                uniform vec4 u_base_color;
+                uniform vec3 u_light_direction;
+                varying vec3 v_normal;
+                void main() {
+                    float diffuse = max(dot(normalize(v_normal), normalize(u_light_direction)), 0.0);
+                    float brightness = 0.86 + diffuse * 0.12;
+                    gl_FragColor = vec4(u_base_color.rgb * brightness, u_base_color.a);
+                }
+                """,
+            )
+            view_cube_program.bindAttributeLocation("a_position", 0)
+            view_cube_program.bindAttributeLocation("a_normal", 1)
+            view_cube_program.link()
+
+            view_cube_line_program = QOpenGLShaderProgram(self)
+            view_cube_line_program.addShaderFromSourceCode(
+                QOpenGLShader.ShaderTypeBit.Vertex,
+                """
+                #version 120
+                attribute vec3 a_position;
+                uniform vec3 u_camera_right;
+                uniform vec3 u_camera_up;
+                uniform vec3 u_camera_forward;
+                uniform vec3 u_overlay_eye;
+                uniform vec2 u_widget_size;
+                uniform vec2 u_cube_center;
+                uniform float u_projection_scale;
+                uniform float u_pixel_scale;
+                uniform float u_near_depth;
+                uniform float u_far_depth;
+                uniform float u_depth_bias;
+                void main() {
+                    vec3 relative = a_position - u_overlay_eye;
+                    float cam_x = dot(relative, u_camera_right);
+                    float cam_y = dot(relative, u_camera_up);
+                    float cam_z = max(0.05, dot(relative, u_camera_forward));
+                    float screen_x = u_cube_center.x + (cam_x * u_projection_scale / cam_z) * u_pixel_scale;
+                    float screen_y = u_cube_center.y - (cam_y * u_projection_scale / cam_z) * u_pixel_scale;
+                    float ndc_x = (screen_x / max(u_widget_size.x, 1.0)) * 2.0 - 1.0;
+                    float ndc_y = 1.0 - (screen_y / max(u_widget_size.y, 1.0)) * 2.0;
+                    float depth_t = clamp((cam_z - u_near_depth) / max(u_far_depth - u_near_depth, 0.0001), 0.0, 1.0);
+                    float ndc_z = depth_t * 2.0 - 1.0 - u_depth_bias;
+                    gl_Position = vec4(ndc_x, ndc_y, ndc_z, 1.0);
+                }
+                """,
+            )
+            view_cube_line_program.addShaderFromSourceCode(
+                QOpenGLShader.ShaderTypeBit.Fragment,
+                """
+                #version 120
+                uniform vec4 u_base_color;
+                void main() {
+                    gl_FragColor = u_base_color;
+                }
+                """,
+            )
+            view_cube_line_program.bindAttributeLocation("a_position", 0)
+            view_cube_line_program.link()
+
+            view_cube_label_program = QOpenGLShaderProgram(self)
+            view_cube_label_program.addShaderFromSourceCode(
+                QOpenGLShader.ShaderTypeBit.Vertex,
+                """
+                #version 120
+                attribute vec3 a_position;
+                attribute vec2 a_texcoord;
+                uniform vec3 u_camera_right;
+                uniform vec3 u_camera_up;
+                uniform vec3 u_camera_forward;
+                uniform vec3 u_overlay_eye;
+                uniform vec2 u_widget_size;
+                uniform vec2 u_cube_center;
+                uniform float u_projection_scale;
+                uniform float u_pixel_scale;
+                uniform float u_near_depth;
+                uniform float u_far_depth;
+                uniform float u_depth_bias;
+                varying vec2 v_texcoord;
+                void main() {
+                    vec3 relative = a_position - u_overlay_eye;
+                    float cam_x = dot(relative, u_camera_right);
+                    float cam_y = dot(relative, u_camera_up);
+                    float cam_z = max(0.05, dot(relative, u_camera_forward));
+                    float screen_x = u_cube_center.x + (cam_x * u_projection_scale / cam_z) * u_pixel_scale;
+                    float screen_y = u_cube_center.y - (cam_y * u_projection_scale / cam_z) * u_pixel_scale;
+                    float ndc_x = (screen_x / max(u_widget_size.x, 1.0)) * 2.0 - 1.0;
+                    float ndc_y = 1.0 - (screen_y / max(u_widget_size.y, 1.0)) * 2.0;
+                    float depth_t = clamp((cam_z - u_near_depth) / max(u_far_depth - u_near_depth, 0.0001), 0.0, 1.0);
+                    float ndc_z = depth_t * 2.0 - 1.0 - u_depth_bias;
+                    gl_Position = vec4(ndc_x, ndc_y, ndc_z, 1.0);
+                    v_texcoord = a_texcoord;
+                }
+                """,
+            )
+            view_cube_label_program.addShaderFromSourceCode(
+                QOpenGLShader.ShaderTypeBit.Fragment,
+                """
+                #version 120
+                uniform sampler2D u_label_texture;
+                uniform vec4 u_text_color;
+                varying vec2 v_texcoord;
+                void main() {
+                    float alpha = texture2D(u_label_texture, v_texcoord).a;
+                    if (alpha <= 0.001) {
+                        discard;
+                    }
+                    gl_FragColor = vec4(u_text_color.rgb, u_text_color.a * alpha);
+                }
+                """,
+            )
+            view_cube_label_program.bindAttributeLocation("a_position", 0)
+            view_cube_label_program.bindAttributeLocation("a_texcoord", 1)
+            view_cube_label_program.link()
+
             self._mesh_program = mesh_program
             self._line_program = line_program
+            self._view_cube_program = view_cube_program
+            self._view_cube_line_program = view_cube_line_program
+            self._view_cube_label_program = view_cube_label_program
 
         def _create_buffers(self) -> None:
             self._mesh_vertex_buffer = QOpenGLBuffer(QOpenGLBuffer.Type.VertexBuffer)
             self._mesh_vertex_buffer.create()
             self._line_vertex_buffer = QOpenGLBuffer(QOpenGLBuffer.Type.VertexBuffer)
             self._line_vertex_buffer.create()
+            self._view_cube_vertex_buffer = QOpenGLBuffer(QOpenGLBuffer.Type.VertexBuffer)
+            self._view_cube_vertex_buffer.create()
+            self._view_cube_line_buffer = QOpenGLBuffer(QOpenGLBuffer.Type.VertexBuffer)
+            self._view_cube_line_buffer.create()
+            self._view_cube_label_buffer = QOpenGLBuffer(QOpenGLBuffer.Type.VertexBuffer)
+            self._view_cube_label_buffer.create()
             self._mesh_index_buffer = QOpenGLBuffer(QOpenGLBuffer.Type.IndexBuffer)
             self._mesh_index_buffer.create()
             self._mesh_interactive_index_buffer = QOpenGLBuffer(QOpenGLBuffer.Type.IndexBuffer)
@@ -2781,6 +3213,24 @@ if _HAS_QT_OPENGL:
                     self._line_vertex_buffer.bind()
                     self._line_vertex_buffer.allocate(self._line_vertex_blob, blob_size)
                     self._line_vertex_buffer.release()
+            if self._view_cube_vertex_buffer is not None:
+                blob_size = len(self._view_cube_geometry.triangle_blob)
+                if blob_size:
+                    self._view_cube_vertex_buffer.bind()
+                    self._view_cube_vertex_buffer.allocate(self._view_cube_geometry.triangle_blob, blob_size)
+                    self._view_cube_vertex_buffer.release()
+            if self._view_cube_line_buffer is not None:
+                blob_size = len(self._view_cube_geometry.line_blob)
+                if blob_size:
+                    self._view_cube_line_buffer.bind()
+                    self._view_cube_line_buffer.allocate(self._view_cube_geometry.line_blob, blob_size)
+                    self._view_cube_line_buffer.release()
+            if self._view_cube_label_buffer is not None:
+                blob_size = len(self._view_cube_label_geometry.vertex_blob)
+                if blob_size:
+                    self._view_cube_label_buffer.bind()
+                    self._view_cube_label_buffer.allocate(self._view_cube_label_geometry.vertex_blob, blob_size)
+                    self._view_cube_label_buffer.release()
             if self._mesh_index_buffer is not None:
                 blob_size = len(self._mesh_triangle_blob)
                 if blob_size:
@@ -2818,6 +3268,19 @@ if _HAS_QT_OPENGL:
                     self._section_vertex_buffer.allocate(self._section_vertex_blob, blob_size)
                     self._section_vertex_buffer.release()
             self._gpu_dirty = False
+
+        def _create_view_cube_label_texture(self) -> None:
+            if QOpenGLTexture is None:
+                return
+            atlas = _view_cube_label_atlas(_view_cube_label_font_family()).mirrored(False, True)
+            if self._view_cube_label_texture is not None:
+                self._view_cube_label_texture.destroy()
+            self._view_cube_label_texture = QOpenGLTexture(atlas)
+            self._view_cube_label_texture.setWrapMode(QOpenGLTexture.WrapMode.ClampToEdge)
+            self._view_cube_label_texture.setMinMagFilters(
+                QOpenGLTexture.Filter.Linear,
+                QOpenGLTexture.Filter.Linear,
+            )
 
         def _draw_mesh(self, gl, mvp_matrix: QMatrix4x4) -> None:
             if self._mesh_program is None or self._mesh_vertex_buffer is None:
@@ -2940,6 +3403,152 @@ if _HAS_QT_OPENGL:
             self._line_program.disableAttributeArray(0)
             self._line_program.release()
 
+        def _bind_view_cube_projection_uniforms(
+            self,
+            program: QOpenGLShaderProgram,
+            camera: _ViewportCameraState,
+            projection: _ViewCubeProjectionState,
+        ) -> None:
+            program.setUniformValue("u_camera_right", QVector3D(*camera.right))
+            program.setUniformValue("u_camera_up", QVector3D(*camera.up))
+            program.setUniformValue("u_camera_forward", QVector3D(*camera.forward))
+            program.setUniformValue("u_overlay_eye", QVector3D(*projection.overlay_eye))
+            program.setUniformValue("u_widget_size", QVector2D(float(self.width()), float(self.height())))
+            program.setUniformValue("u_cube_center", QVector2D(projection.center[0], projection.center[1]))
+            program.setUniformValue("u_projection_scale", projection.projection_scale)
+            program.setUniformValue("u_pixel_scale", projection.pixel_scale)
+            program.setUniformValue("u_near_depth", projection.near_depth)
+            program.setUniformValue("u_far_depth", projection.far_depth)
+
+        def _clear_view_cube_depth_region(self, gl) -> None:
+            widget_rect = _view_cube_widget_rect(float(self.width()), float(self.height()))
+            scissor_x = max(0, int(math.floor(widget_rect.left())))
+            scissor_y = max(0, int(math.floor(float(self.height()) - widget_rect.bottom())))
+            scissor_width = max(1, int(math.ceil(widget_rect.width())))
+            scissor_height = max(1, int(math.ceil(widget_rect.height())))
+            gl.glEnable(GL_SCISSOR_TEST)
+            gl.glScissor(scissor_x, scissor_y, scissor_width, scissor_height)
+            gl.glClear(GL_DEPTH_BUFFER_BIT)
+            gl.glDisable(GL_SCISSOR_TEST)
+
+        def _draw_view_cube(self, gl, camera: _ViewportCameraState) -> None:
+            if (
+                self._view_cube_program is None
+                or self._view_cube_line_program is None
+                or self._view_cube_vertex_buffer is None
+                or self._view_cube_line_buffer is None
+            ):
+                return
+            if self._view_cube_label_texture is None:
+                self._create_view_cube_label_texture()
+
+            widget_rect = _view_cube_widget_rect(float(self.width()), float(self.height()))
+            cube_center = (
+                widget_rect.right() - _VIEW_CUBE_WIDGET_INSET_X,
+                widget_rect.top() + _VIEW_CUBE_WIDGET_INSET_Y,
+            )
+            projection = _view_cube_projection_state(camera, cube_center, _VIEW_CUBE_SIZE)
+            self._clear_view_cube_depth_region(gl)
+
+            gl.glEnable(GL_DEPTH_TEST)
+            gl.glDepthMask(True)
+            gl.glDisable(GL_BLEND)
+            gl.glDisable(GL_CULL_FACE)
+
+            light_direction = QVector3D(*_normalize(_VIEWPORT_LIGHT_DIRECTION))
+            self._view_cube_program.bind()
+            self._bind_view_cube_projection_uniforms(self._view_cube_program, camera, projection)
+            self._view_cube_program.setUniformValue("u_light_direction", light_direction)
+            self._view_cube_vertex_buffer.bind()
+            self._view_cube_program.enableAttributeArray(0)
+            self._view_cube_program.setAttributeBuffer(0, GL_FLOAT, 0, 3, 24)
+            self._view_cube_program.enableAttributeArray(1)
+            self._view_cube_program.setAttributeBuffer(1, GL_FLOAT, 12, 3, 24)
+            for offset, count, color_hex in (
+                (
+                    self._view_cube_geometry.face_vertex_offset,
+                    self._view_cube_geometry.face_vertex_count,
+                    _VIEWPORT_CUBE_FACE_HEX,
+                ),
+                (
+                    self._view_cube_geometry.edge_vertex_offset,
+                    self._view_cube_geometry.edge_vertex_count,
+                    _VIEWPORT_CUBE_BEVEL_HEX,
+                ),
+                (
+                    self._view_cube_geometry.corner_vertex_offset,
+                    self._view_cube_geometry.corner_vertex_count,
+                    _VIEWPORT_CUBE_CORNER_HEX,
+                ),
+            ):
+                if count <= 0:
+                    continue
+                color = QColor(color_hex)
+                self._view_cube_program.setUniformValue(
+                    "u_base_color",
+                    QVector4D(color.redF(), color.greenF(), color.blueF(), 1.0),
+                )
+                gl.glDrawArrays(GL_TRIANGLES, offset, count)
+            self._view_cube_vertex_buffer.release()
+            self._view_cube_program.disableAttributeArray(0)
+            self._view_cube_program.disableAttributeArray(1)
+            self._view_cube_program.release()
+
+            if (
+                self._view_cube_label_program is not None
+                and self._view_cube_label_buffer is not None
+                and self._view_cube_label_texture is not None
+                and self._view_cube_label_geometry.vertex_count > 0
+            ):
+                gl.glEnable(GL_BLEND)
+                gl.glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
+                gl.glDepthMask(False)
+                self._view_cube_label_program.bind()
+                self._bind_view_cube_projection_uniforms(self._view_cube_label_program, camera, projection)
+                self._view_cube_label_program.setUniformValue("u_depth_bias", _VIEW_CUBE_LABEL_GL_DEPTH_BIAS)
+                text_color = QColor(_VIEWPORT_CUBE_TEXT_HEX)
+                self._view_cube_label_program.setUniformValue(
+                    "u_text_color",
+                    QVector4D(text_color.redF(), text_color.greenF(), text_color.blueF(), 0.98),
+                )
+                self._view_cube_label_program.setUniformValue("u_label_texture", 0)
+                self._view_cube_label_texture.bind(0)
+                self._view_cube_label_buffer.bind()
+                self._view_cube_label_program.enableAttributeArray(0)
+                self._view_cube_label_program.setAttributeBuffer(0, GL_FLOAT, 0, 3, 20)
+                self._view_cube_label_program.enableAttributeArray(1)
+                self._view_cube_label_program.setAttributeBuffer(1, GL_FLOAT, 12, 2, 20)
+                gl.glDrawArrays(GL_TRIANGLES, 0, self._view_cube_label_geometry.vertex_count)
+                self._view_cube_label_buffer.release()
+                self._view_cube_label_texture.release()
+                self._view_cube_label_program.disableAttributeArray(0)
+                self._view_cube_label_program.disableAttributeArray(1)
+                self._view_cube_label_program.release()
+                gl.glDepthMask(True)
+
+            if self._view_cube_geometry.line_vertex_count <= 0:
+                gl.glDisable(GL_BLEND)
+                gl.glDepthMask(True)
+                return
+
+            self._view_cube_line_program.bind()
+            self._bind_view_cube_projection_uniforms(self._view_cube_line_program, camera, projection)
+            self._view_cube_line_program.setUniformValue("u_depth_bias", _VIEW_CUBE_GL_LINE_DEPTH_BIAS)
+            line_color = QColor(_VIEWPORT_CUBE_EDGE_HEX)
+            self._view_cube_line_program.setUniformValue(
+                "u_base_color",
+                QVector4D(line_color.redF(), line_color.greenF(), line_color.blueF(), 0.92),
+            )
+            self._view_cube_line_buffer.bind()
+            self._view_cube_line_program.enableAttributeArray(0)
+            self._view_cube_line_program.setAttributeBuffer(0, GL_FLOAT, 0, 3, 12)
+            gl.glDrawArrays(GL_LINES, 0, self._view_cube_geometry.line_vertex_count)
+            self._view_cube_line_buffer.release()
+            self._view_cube_line_program.disableAttributeArray(0)
+            self._view_cube_line_program.release()
+            gl.glDisable(GL_BLEND)
+            gl.glDepthMask(True)
+
         def _begin_interaction(self) -> None:
             self._interactive_preview = True
             self._interaction_timer.start()
@@ -3004,7 +3613,7 @@ if _HAS_QT_OPENGL:
             if adaptive_text:
                 painter.drawText(16, 58, adaptive_text)
             _draw_axis_triad_overlay(painter, camera, float(self.height()))
-            _draw_view_cube_overlay(painter, self._view_cube_overlay())
+            _draw_view_cube_overlay(painter, self._view_cube_overlay(), draw_body=False, draw_labels=False)
 
         def _build_projection(self):
             camera = self._camera_state()
