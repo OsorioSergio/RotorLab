@@ -224,6 +224,74 @@ def test_orbit_camera_angles_preserve_roll_during_standard_drag():
     assert roll == pytest.approx(18.0)
 
 
+def test_orbit_camera_angles_do_not_flip_yaw_near_top_pole():
+    yaw, pitch, roll = 10.0, 84.0, 0.0
+    yaw, pitch, roll = _orbit_camera_angles(yaw, pitch, roll, 0.0, -4.0)
+    assert yaw == pytest.approx(10.0)
+    assert pitch == pytest.approx(88.0)
+
+    yaw, pitch, roll = _orbit_camera_angles(yaw, pitch, roll, 0.0, -4.0)
+    assert yaw == pytest.approx(10.0)
+    assert pitch == pytest.approx(92.0)
+
+
+def test_orbit_camera_angles_do_not_flip_yaw_near_bottom_pole():
+    yaw, pitch, roll = 10.0, -84.0, 0.0
+    yaw, pitch, roll = _orbit_camera_angles(yaw, pitch, roll, 0.0, 4.0)
+    assert yaw == pytest.approx(10.0)
+    assert pitch == pytest.approx(-88.0)
+
+    yaw, pitch, roll = _orbit_camera_angles(yaw, pitch, roll, 0.0, 4.0)
+    assert yaw == pytest.approx(10.0)
+    assert pitch == pytest.approx(-92.0)
+
+
+def test_orbit_camera_angles_keep_horizontal_drag_stable_near_top_pole():
+    yaw, pitch, roll = _orbit_camera_angles(10.0, 89.0, 0.0, 4.0, 0.0)
+    assert yaw == pytest.approx(14.0)
+    assert pitch == pytest.approx(89.0)
+    assert roll == pytest.approx(0.0)
+
+
+def test_orbit_camera_angles_keep_horizontal_drag_stable_near_bottom_pole():
+    yaw, pitch, roll = _orbit_camera_angles(10.0, -89.0, 0.0, 4.0, 0.0)
+    assert yaw == pytest.approx(14.0)
+    assert pitch == pytest.approx(-89.0)
+    assert roll == pytest.approx(0.0)
+
+
+def test_orbit_camera_angles_pass_through_top_view_without_snapping():
+    yaw, pitch, roll = 10.0, 88.0, 0.0
+    yaw, pitch, roll = _orbit_camera_angles(yaw, pitch, roll, 0.0, -4.0)
+    assert yaw == pytest.approx(10.0)
+    assert pitch == pytest.approx(92.0)
+    assert roll == pytest.approx(0.0)
+
+
+def test_orbit_camera_angles_pass_through_bottom_view_without_snapping():
+    yaw, pitch, roll = 10.0, -88.0, 0.0
+    yaw, pitch, roll = _orbit_camera_angles(yaw, pitch, roll, 0.0, 4.0)
+    assert yaw == pytest.approx(10.0)
+    assert pitch == pytest.approx(-92.0)
+    assert roll == pytest.approx(0.0)
+
+
+def test_camera_basis_stays_continuous_near_top_view():
+    near_top = _camera_state((0.0, 0.0, 0.0), 1.0, 0.0, 78.0)
+    closer_top = _camera_state((0.0, 0.0, 0.0), 1.0, 0.0, 79.0)
+
+    assert sum(left * right for left, right in zip(near_top.right, closer_top.right)) > 0.999
+    assert sum(left * right for left, right in zip(near_top.up, closer_top.up)) > 0.999
+
+
+def test_camera_basis_stays_continuous_near_bottom_view():
+    near_bottom = _camera_state((0.0, 0.0, 0.0), 1.0, -30.0, -78.0)
+    closer_bottom = _camera_state((0.0, 0.0, 0.0), 1.0, -30.0, -79.0)
+
+    assert sum(left * right for left, right in zip(near_bottom.right, closer_bottom.right)) > 0.999
+    assert sum(left * right for left, right in zip(near_bottom.up, closer_bottom.up)) > 0.999
+
+
 def test_view_cube_overlay_exposes_visible_faces_and_hit_targets():
     overlay = _build_view_cube_overlay(
         _camera_state((0.0, 0.0, 0.0), 4.0, -45.0, 35.26438968),

@@ -449,10 +449,15 @@ def _camera_state(
     )
     eye = _add(center, _scale(eye_direction, distance))
     forward = _normalize(_scale(eye_direction, -1.0))
-    world_up = (0.0, 0.0, 1.0)
-    if abs(_dot(forward, world_up)) > 0.98:
-        world_up = (0.0, 1.0, 0.0)
-    right = _normalize(_cross(forward, world_up))
+    # Build the orbit basis directly from yaw so the camera does not snap to a
+    # different fallback up-axis near the top/bottom poles.
+    right = _normalize(
+        (
+            -math.sin(yaw_rad),
+            math.cos(yaw_rad),
+            0.0,
+        )
+    )
     up = _normalize(_cross(right, forward))
     if abs(roll_deg) > 1e-6:
         right = _normalize(_rotate_vector(right, forward, roll_deg))
@@ -497,6 +502,11 @@ def _orthonormalize_up(
     return _normalize(candidate)
 
 
+def _wrap_degrees(angle_deg: float) -> float:
+    wrapped = (angle_deg + 180.0) % 360.0 - 180.0
+    return 180.0 if math.isclose(wrapped, -180.0) else wrapped
+
+
 def _camera_angles_from_eye_direction(
     eye_direction: tuple[float, float, float],
     up: tuple[float, float, float],
@@ -539,16 +549,8 @@ def _orbit_camera_angles(
     horizontal_degrees: float,
     vertical_degrees: float,
 ) -> tuple[float, float, float]:
-    camera = _camera_state((0.0, 0.0, 0.0), 1.0, yaw_deg, pitch_deg, roll_deg)
-    next_yaw = yaw_deg
-    next_pitch = pitch_deg
-    if abs(horizontal_degrees) > 1e-6:
-        rotated_eye_direction = _rotate_vector(camera.eye_direction, camera.up, horizontal_degrees)
-        next_yaw, next_pitch, _ = _camera_angles_from_eye_direction(rotated_eye_direction, camera.up)
-    if abs(vertical_degrees) > 1e-6:
-        orbit_camera = _camera_state((0.0, 0.0, 0.0), 1.0, next_yaw, next_pitch, roll_deg)
-        rotated_eye_direction = _rotate_vector(orbit_camera.eye_direction, orbit_camera.right, vertical_degrees)
-        next_yaw, next_pitch, _ = _camera_angles_from_eye_direction(rotated_eye_direction, orbit_camera.up)
+    next_yaw = _wrap_degrees(yaw_deg + horizontal_degrees)
+    next_pitch = pitch_deg - vertical_degrees
     return next_yaw, next_pitch, roll_deg
 
 
@@ -2589,12 +2591,8 @@ if _HAS_QT_OPENGL:
     class _OpenGLPropellerViewportWidget(QOpenGLWidget):
         def __init__(self, parent: QWidget | None = None) -> None:
             super().__init__(parent)
-            surface_format = QSurfaceFormat()
-            surface_format.setRenderableType(QSurfaceFormat.RenderableType.OpenGL)
-            surface_format.setVersion(2, 0)
-            surface_format.setProfile(QSurfaceFormat.OpenGLContextProfile.NoProfile)
-            surface_format.setDepthBufferSize(24)
-            surface_format.setSamples(8)
+            surface_format = self.format()
+            surface_format.setSamples(max(surface_format.samples(), 8))
             self.setFormat(surface_format)
             self.setObjectName("PropellerViewport")
             self.setMinimumWidth(320)
