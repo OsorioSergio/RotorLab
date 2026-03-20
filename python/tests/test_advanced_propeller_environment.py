@@ -135,6 +135,38 @@ def test_advanced_propeller_workspace_exposes_authoritative_stages_and_builds(wi
     assert "Pattern" in labels
 
 
+def test_advanced_propeller_workspace_uses_compact_stage_tree_indentation(window, qtbot):
+    node_id = _drop_propeller_module(window)
+    assert window.orchestrate.scene.activate_node(node_id)
+    qtbot.wait(200)
+
+    workspace = window.workspace_stack.currentWidget()
+    assert isinstance(workspace, AdvancedPropellerWorkspace)
+    assert workspace.stage_tree.indentation() == advanced_propeller_module._PROPELLER_STAGE_TREE_INDENTATION
+
+
+def test_advanced_propeller_workspace_defaults_to_viewer_focused_split(window, qtbot):
+    node_id = _drop_propeller_module(window)
+    assert window.orchestrate.scene.activate_node(node_id)
+    qtbot.wait(200)
+
+    workspace = window.workspace_stack.currentWidget()
+    assert isinstance(workspace, AdvancedPropellerWorkspace)
+
+    sizes = workspace.middle_splitter.sizes()
+    assert len(sizes) == 2
+    assert sizes[0] + sizes[1] > 0
+    assert sizes[0] / (sizes[0] + sizes[1]) == pytest.approx(
+        advanced_propeller_module._PROPELLER_INSPECTOR_DEFAULT_WIDTH
+        / (
+            advanced_propeller_module._PROPELLER_INSPECTOR_DEFAULT_WIDTH
+            + advanced_propeller_module._PROPELLER_VIEWPORT_DEFAULT_WIDTH
+        ),
+        abs=0.05,
+    )
+    assert sizes[1] > sizes[0]
+
+
 def test_advanced_propeller_workspace_rebuilds_after_pattern_edit(window, qtbot):
     node_id = _drop_propeller_module(window)
     assert window.orchestrate.scene.activate_node(node_id)

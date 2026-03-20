@@ -265,6 +265,10 @@ _VIEWPORT_TRIAD_Z_HEX = "#3a64ff"
 _VIEWPORT_LIGHT_DIRECTION = (0.35, -0.28, 0.89)
 _VIEWPORT_LIGHT_AMBIENT = 0.86
 _VIEWPORT_LIGHT_DIFFUSE = 0.12
+_PROPELLER_STAGE_TREE_INDENTATION = 8
+_PROPELLER_STAGE_TREE_DEFAULT_WIDTH = 190
+_PROPELLER_INSPECTOR_DEFAULT_WIDTH = 450
+_PROPELLER_VIEWPORT_DEFAULT_WIDTH = 660
 _TRIAD_SIZE = 46.0
 _TRIAD_PADDING = 18.0
 _TRIAD_ARROW_SIZE = 6.0
@@ -3681,6 +3685,7 @@ class AdvancedPropellerWorkspace(QWidget):
         self.stage_tree.setObjectName("PropellerStageTree")
         self.stage_tree.setHeaderHidden(True)
         self.stage_tree.setAlternatingRowColors(True)
+        self.stage_tree.setIndentation(_PROPELLER_STAGE_TREE_INDENTATION)
         self.stage_tree.itemSelectionChanged.connect(self._on_stage_selection_changed)
 
         self.inspector_stack = QStackedWidget(self)
@@ -3700,19 +3705,22 @@ class AdvancedPropellerWorkspace(QWidget):
         center_layout.addWidget(self.inspector_stack, 1)
         center_layout.addWidget(self.plot_tabs, 1)
 
-        middle_splitter = QSplitter(Qt.Orientation.Horizontal, self)
-        middle_splitter.addWidget(center_panel)
-        middle_splitter.addWidget(self.viewport)
-        middle_splitter.setStretchFactor(0, 1)
-        middle_splitter.setStretchFactor(1, 1)
-        middle_splitter.setSizes([540, 560])
+        self.middle_splitter = QSplitter(Qt.Orientation.Horizontal, self)
+        self.middle_splitter.addWidget(center_panel)
+        self.middle_splitter.addWidget(self.viewport)
+        self.middle_splitter.setStretchFactor(0, 1)
+        self.middle_splitter.setStretchFactor(1, 1)
+        self.middle_splitter.setSizes([
+            _PROPELLER_INSPECTOR_DEFAULT_WIDTH,
+            _PROPELLER_VIEWPORT_DEFAULT_WIDTH,
+        ])
 
         outer_splitter = QSplitter(Qt.Orientation.Horizontal, self)
         outer_splitter.addWidget(self.stage_tree)
-        outer_splitter.addWidget(middle_splitter)
+        outer_splitter.addWidget(self.middle_splitter)
         outer_splitter.setStretchFactor(0, 0)
         outer_splitter.setStretchFactor(1, 1)
-        outer_splitter.setSizes([220, 1080])
+        outer_splitter.setSizes([_PROPELLER_STAGE_TREE_DEFAULT_WIDTH, 1110])
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
