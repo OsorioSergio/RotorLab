@@ -268,23 +268,24 @@ _VIEWPORT_LIGHT_DIFFUSE = 0.12
 _TRIAD_SIZE = 46.0
 _TRIAD_PADDING = 18.0
 _TRIAD_ARROW_SIZE = 6.0
-_VIEW_CUBE_SIZE = 120.0
+_VIEW_CUBE_DISPLAY_SCALE = 1.15
+_VIEW_CUBE_SIZE = 120.0 * _VIEW_CUBE_DISPLAY_SCALE
 _VIEW_CUBE_PADDING = 18.0
-_VIEW_CUBE_WIDGET_WIDTH = 190.0
-_VIEW_CUBE_WIDGET_HEIGHT = 190.0
-_VIEW_CUBE_WIDGET_INSET_X = 84.0
-_VIEW_CUBE_WIDGET_INSET_Y = 95.0
+_VIEW_CUBE_WIDGET_WIDTH = 190.0 * _VIEW_CUBE_DISPLAY_SCALE
+_VIEW_CUBE_WIDGET_HEIGHT = 190.0 * _VIEW_CUBE_DISPLAY_SCALE
+_VIEW_CUBE_WIDGET_INSET_X = (_VIEW_CUBE_WIDGET_WIDTH * 0.5) - 11.0
+_VIEW_CUBE_WIDGET_INSET_Y = _VIEW_CUBE_WIDGET_HEIGHT * 0.5
 _VIEW_CUBE_CHAMFER_RATIO = 0.23
-_VIEW_CUBE_CORNER_RADIUS = 9.0
-_VIEW_CUBE_EDGE_RADIUS = 7.0
+_VIEW_CUBE_CORNER_RADIUS = 9.0 * _VIEW_CUBE_DISPLAY_SCALE
+_VIEW_CUBE_EDGE_RADIUS = 7.0 * _VIEW_CUBE_DISPLAY_SCALE
 _VIEW_CUBE_FOV_DEGREES = 28.0
 _VIEW_CUBE_CAMERA_DISTANCE = 6.2
 _VIEW_CUBE_FIT_FRACTION = 0.84
-_VIEW_CUBE_CONTROL_SIZE = 18.0
-_VIEW_CUBE_CONTROL_GAP = 8.0
-_VIEW_CUBE_HOME_SIZE = 22.0
-_VIEW_CUBE_ROLL_WIDTH = 28.0
-_VIEW_CUBE_ROLL_HEIGHT = 18.0
+_VIEW_CUBE_CONTROL_SIZE = 18.0 * _VIEW_CUBE_DISPLAY_SCALE
+_VIEW_CUBE_CONTROL_GAP = 8.0 * _VIEW_CUBE_DISPLAY_SCALE
+_VIEW_CUBE_HOME_SIZE = 22.0 * _VIEW_CUBE_DISPLAY_SCALE
+_VIEW_CUBE_ROLL_WIDTH = 28.0 * _VIEW_CUBE_DISPLAY_SCALE
+_VIEW_CUBE_ROLL_HEIGHT = 18.0 * _VIEW_CUBE_DISPLAY_SCALE
 _VIEW_CUBE_GL_LINE_DEPTH_BIAS = 0.003
 _VIEW_CUBE_LABEL_GL_DEPTH_BIAS = 0.0022
 _VIEW_CUBE_LABEL_MARGIN = 0.07
@@ -3251,10 +3252,15 @@ if _HAS_QT_OPENGL:
                 self._view_cube_label_texture.destroy()
             self._view_cube_label_texture = QOpenGLTexture(atlas)
             self._view_cube_label_texture.setWrapMode(QOpenGLTexture.WrapMode.ClampToEdge)
+            min_filter = QOpenGLTexture.Filter.Linear
+            if hasattr(QOpenGLTexture.Filter, "LinearMipMapLinear"):
+                min_filter = QOpenGLTexture.Filter.LinearMipMapLinear
             self._view_cube_label_texture.setMinMagFilters(
-                QOpenGLTexture.Filter.Linear,
+                min_filter,
                 QOpenGLTexture.Filter.Linear,
             )
+            if min_filter != QOpenGLTexture.Filter.Linear:
+                self._view_cube_label_texture.generateMipMaps()
 
         def _draw_mesh(self, gl, mvp_matrix: QMatrix4x4) -> None:
             if self._mesh_program is None or self._mesh_vertex_buffer is None:
