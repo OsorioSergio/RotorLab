@@ -204,9 +204,9 @@ struct TipArtifact {
 #[derive(Debug, Clone)]
 struct HubArtifact {
     hub_rings: Vec<Vec<[f64; 3]>>,
-    hub_surface: BSplineSurface<Point3>,
-    fore_cap_surface: BSplineSurface<Point3>,
-    aft_cap_surface: BSplineSurface<Point3>,
+    side_mesh: MeshPart,
+    fore_cap_mesh: MeshPart,
+    aft_cap_mesh: MeshPart,
 }
 
 #[derive(Debug, Clone)]
@@ -645,31 +645,21 @@ fn build_hub_stage(state: &PropellerFeatureState) -> Result<HubArtifact, String>
     let fore_len = length * (fore_share / share_sum);
     let aft_len = length * (aft_share / share_sum);
     let ring_points = state.preview_settings.tessellation_cols.max(48);
-    let ring_count = 8usize;
-
-    let mut hub_rings = Vec::new();
-    for index in 0..ring_count {
-        let t = index as f64 / (ring_count.saturating_sub(1).max(1) as f64);
-        let z = -fore_len + t * (fore_len + aft_len);
-        hub_rings.push(circle_ring(radius, z, ring_points));
-    }
 
     let fore_center = [0.0, 0.0, -fore_len];
     let aft_center = [0.0, 0.0, aft_len];
-    let fore_cap_surface = build_cap_surface(&hub_rings[0], fore_center)?;
-    let aft_cap_surface = build_cap_surface(
-        hub_rings
-            .last()
-            .ok_or_else(|| "Hub ring generation failed.".to_string())?,
-        aft_center,
-    )?;
-    let hub_surface = build_surface_from_rings(&hub_rings)?;
+    let fore_ring = circle_ring(radius, fore_center[2], ring_points);
+    let aft_ring = circle_ring(radius, aft_center[2], ring_points);
+    let side_mesh = build_cylinder_side_mesh(&fore_ring, &aft_ring);
+    let fore_cap_mesh = build_planar_cap_mesh(&fore_ring, fore_center, -1.0);
+    let aft_cap_mesh = build_planar_cap_mesh(&aft_ring, aft_center, 1.0);
+    let hub_rings = vec![fore_ring, aft_ring];
 
     Ok(HubArtifact {
         hub_rings,
-        hub_surface,
-        fore_cap_surface,
-        aft_cap_surface,
+        side_mesh,
+        fore_cap_mesh,
+        aft_cap_mesh,
     })
 }
 
@@ -707,11 +697,11 @@ fn build_preview_mesh(
     let blade_side_mesh = tessellate_surface(&blade_surface, rows, cols);
     let root_cap_mesh = tessellate_surface(&root_cap_surface, (rows / 3).max(6), cols);
     let tip_cap_mesh = tessellate_surface(&tip_artifact.tip_surface, (rows / 3).max(6), cols);
-    let mut hub_side_mesh = tessellate_surface(&hub_artifact.hub_surface, (rows / 3).max(10), cols);
+    let mut hub_side_mesh = hub_artifact.side_mesh.clone();
     orient_mesh_outward_radial(&mut hub_side_mesh);
-    let mut hub_fore_mesh = tessellate_surface(&hub_artifact.fore_cap_surface, 6, cols);
+    let mut hub_fore_mesh = hub_artifact.fore_cap_mesh.clone();
     orient_mesh_outward_axis(&mut hub_fore_mesh, -1.0);
-    let mut hub_aft_mesh = tessellate_surface(&hub_artifact.aft_cap_surface, 6, cols);
+    let mut hub_aft_mesh = hub_artifact.aft_cap_mesh.clone();
     orient_mesh_outward_axis(&mut hub_aft_mesh, 1.0);
 
     let mut assembled_vertices = Vec::<[f64; 3]>::new();
@@ -1023,6 +1013,55 @@ fn build_cap_surface(
     }
     rings.push(close_ring(vec![apex; core_ring.len()]));
     build_surface_from_rings(&rings)
+}
+
+fn build_cylinder_side_mesh(fore_ring: &[[f64; 3]], aft_ring: &[[f64; 3]]) -> MeshPart {
+    let core_count = fore_ring
+        .len()
+        .saturating_sub(1)
+        .min(aft_ring.len().saturating_sub(1));
+    if core_count < 3 {
+        return MeshPart::default();
+    }
+    let mut vertices = Vec::with_capacity(core_count * 2);
+    vertices.extend(fore_ring.iter().take(core_count).copied());
+    vertices.extend(aft_ring.iter().take(core_count).copied());
+
+    let mut faces = Vec::with_capacity(core_count * 2);
+    for index in 0..core_count {
+        let next = (index + 1) % core_count;
+        let fore_current = index;
+        let fore_next = next;
+        let aft_current = core_count + index;
+        let aft_next = core_count + next;
+        faces.push([fore_current, fore_next, aft_current]);
+        faces.push([fore_next, aft_next, aft_current]);
+    }
+
+    MeshPart { vertices, faces }
+}
+
+fn build_planar_cap_mesh(base_ring: &[[f64; 3]], center: [f64; 3], axis_sign: f64) -> MeshPart {
+    let core_count = base_ring.len().saturating_sub(1);
+    if core_count < 3 {
+        return MeshPart::default();
+    }
+    let mut vertices = Vec::with_capacity(core_count + 1);
+    vertices.extend(base_ring.iter().take(core_count).copied());
+    let center_index = vertices.len();
+    vertices.push(center);
+
+    let mut faces = Vec::with_capacity(core_count);
+    for index in 0..core_count {
+        let next = (index + 1) % core_count;
+        if axis_sign < 0.0 {
+            faces.push([center_index, next, index]);
+        } else {
+            faces.push([center_index, index, next]);
+        }
+    }
+
+    MeshPart { vertices, faces }
 }
 
 fn tessellate_surface(surface: &BSplineSurface<Point3>, rows: usize, cols: usize) -> MeshPart {
@@ -1608,24 +1647,21 @@ mod tests {
         reset_build_cache();
         let state = default_feature_state("test-node-hub-lighting");
         let hub_artifact = build_hub_stage(&state).expect("hub stage should succeed");
-        let rows = state.preview_settings.tessellation_rows.max(16);
-        let cols = state.preview_settings.tessellation_cols.max(48);
 
-        let mut hub_side_mesh =
-            tessellate_surface(&hub_artifact.hub_surface, (rows / 3).max(10), cols);
+        let mut hub_side_mesh = hub_artifact.side_mesh.clone();
         orient_mesh_outward_radial(&mut hub_side_mesh);
         let side_alignment =
             average_alignment(&hub_side_mesh, |centroid| [centroid[0], centroid[1], 0.0])
                 .expect("hub side should produce orientation samples");
         assert!(side_alignment > 0.2);
 
-        let mut hub_fore_mesh = tessellate_surface(&hub_artifact.fore_cap_surface, 6, cols);
+        let mut hub_fore_mesh = hub_artifact.fore_cap_mesh.clone();
         orient_mesh_outward_axis(&mut hub_fore_mesh, -1.0);
         let fore_alignment = average_alignment(&hub_fore_mesh, |_| [0.0, 0.0, -1.0])
             .expect("fore cap should produce orientation samples");
         assert!(fore_alignment > 0.95);
 
-        let mut hub_aft_mesh = tessellate_surface(&hub_artifact.aft_cap_surface, 6, cols);
+        let mut hub_aft_mesh = hub_artifact.aft_cap_mesh.clone();
         orient_mesh_outward_axis(&mut hub_aft_mesh, 1.0);
         let aft_alignment = average_alignment(&hub_aft_mesh, |_| [0.0, 0.0, 1.0])
             .expect("aft cap should produce orientation samples");
@@ -1649,15 +1685,37 @@ mod tests {
         let expected_fore_z = -length * (fore_share / share_sum);
         let expected_aft_z = length * (aft_share / share_sum);
 
-        assert_eq!(hub_artifact.hub_rings.len(), 8);
+        assert_eq!(hub_artifact.hub_rings.len(), 2);
         assert!((hub_artifact.hub_rings.first().unwrap()[0][2] - expected_fore_z).abs() < 1e-6);
         assert!((hub_artifact.hub_rings.last().unwrap()[0][2] - expected_aft_z).abs() < 1e-6);
+
+        let ring_point_count = hub_artifact.hub_rings[0].len().saturating_sub(1);
+        assert_eq!(hub_artifact.side_mesh.vertices.len(), ring_point_count * 2);
+        assert_eq!(hub_artifact.side_mesh.faces.len(), ring_point_count * 2);
+        assert_eq!(hub_artifact.fore_cap_mesh.faces.len(), ring_point_count);
+        assert_eq!(hub_artifact.aft_cap_mesh.faces.len(), ring_point_count);
 
         for ring in &hub_artifact.hub_rings {
             for point in &ring[..ring.len().saturating_sub(1)] {
                 let radial = length3([point[0], point[1], 0.0]);
                 assert!((radial - expected_radius).abs() < 1e-6);
             }
+        }
+        for point in &hub_artifact.side_mesh.vertices {
+            let radial = length3([point[0], point[1], 0.0]);
+            assert!((radial - expected_radius).abs() < 1e-6);
+            assert!(
+                (point[2] - expected_fore_z).abs() < 1e-6
+                    || (point[2] - expected_aft_z).abs() < 1e-6
+            );
+        }
+        for point in &hub_artifact.fore_cap_mesh.vertices {
+            assert!((point[2] - expected_fore_z).abs() < 1e-6);
+            assert!(length3([point[0], point[1], 0.0]) <= expected_radius + 1e-6);
+        }
+        for point in &hub_artifact.aft_cap_mesh.vertices {
+            assert!((point[2] - expected_aft_z).abs() < 1e-6);
+            assert!(length3([point[0], point[1], 0.0]) <= expected_radius + 1e-6);
         }
     }
 
@@ -1681,7 +1739,7 @@ mod tests {
         let share_sum = fore_share + aft_share;
         let fore_len = length * (fore_share / share_sum);
         let aft_len = length * (aft_share / share_sum);
-        let cap_radius_limit = hub_radius * 0.25;
+        let cap_radius_limit = hub_radius * 0.95;
 
         let preview_mesh = MeshPart {
             vertices: result.preview_mesh.vertices.clone(),
