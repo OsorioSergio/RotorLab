@@ -131,7 +131,7 @@ def test_advanced_propeller_workspace_exposes_authoritative_stages_and_builds(wi
     assert workspace.session.last_result.model_metadata.component_count >= 5
     assert all(stage in ACTIVE_PROPELLER_STAGES for stage in workspace.session.last_result.built_stages)
     assert "Tip Surface" in labels
-    assert "Hub Blend" in labels
+    assert "Hub Cylinder" in labels
     assert "Pattern" in labels
 
 
@@ -143,6 +143,26 @@ def test_advanced_propeller_workspace_uses_compact_stage_tree_indentation(window
     workspace = window.workspace_stack.currentWidget()
     assert isinstance(workspace, AdvancedPropellerWorkspace)
     assert workspace.stage_tree.indentation() == advanced_propeller_module._PROPELLER_STAGE_TREE_INDENTATION
+
+
+def test_distribution_editor_table_keeps_three_point_rows_visible(qtbot):
+    state = create_default_propeller_feature_state("editor-node", "Propeller")
+    editor = advanced_propeller_module.DistributionEditorWidget()
+    qtbot.addWidget(editor)
+    editor.bind_stage(state, "profile_configurator")
+
+    table = editor.table
+    table_chrome_height = (
+        table.horizontalHeader().sizeHint().height()
+        + table.horizontalScrollBar().sizeHint().height()
+        + table.frameWidth() * 2
+    )
+    visible_row_height = table.minimumHeight() - table_chrome_height
+
+    assert visible_row_height >= (
+        advanced_propeller_module._DISTRIBUTION_EDITOR_MIN_VISIBLE_ROWS
+        * table.verticalHeader().defaultSectionSize()
+    )
 
 
 def test_advanced_propeller_workspace_defaults_to_viewer_focused_split(window, qtbot):

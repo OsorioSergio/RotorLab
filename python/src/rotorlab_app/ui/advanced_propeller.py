@@ -269,6 +269,8 @@ _PROPELLER_STAGE_TREE_INDENTATION = 8
 _PROPELLER_STAGE_TREE_DEFAULT_WIDTH = 190
 _PROPELLER_INSPECTOR_DEFAULT_WIDTH = 450
 _PROPELLER_VIEWPORT_DEFAULT_WIDTH = 660
+_DISTRIBUTION_EDITOR_MIN_VISIBLE_ROWS = 3
+_DISTRIBUTION_EDITOR_MIN_ROW_HEIGHT = 30
 _TRIAD_SIZE = 46.0
 _TRIAD_PADDING = 18.0
 _TRIAD_ARROW_SIZE = 6.0
@@ -1892,6 +1894,30 @@ class DistributionEditorWidget(QWidget):
         button_row.addWidget(self.remove_button)
         button_row.addStretch(1)
         layout.addLayout(button_row)
+        self.ensure_minimum_visible_rows()
+
+    def ensure_minimum_visible_rows(self) -> None:
+        row_height = max(
+            _DISTRIBUTION_EDITOR_MIN_ROW_HEIGHT,
+            math.ceil(QFontMetricsF(self.table.font()).height()) + 12,
+        )
+        self.table.verticalHeader().setDefaultSectionSize(row_height)
+        for row_index in range(self.table.rowCount()):
+            self.table.setRowHeight(row_index, row_height)
+
+        table_min_height = (
+            self.table.horizontalHeader().sizeHint().height()
+            + row_height * _DISTRIBUTION_EDITOR_MIN_VISIBLE_ROWS
+            + self.table.horizontalScrollBar().sizeHint().height()
+            + self.table.frameWidth() * 2
+        )
+        self.table.setMinimumHeight(table_min_height)
+        self.setMinimumHeight(
+            table_min_height
+            + self.selector.sizeHint().height()
+            + max(self.add_button.sizeHint().height(), self.remove_button.sizeHint().height())
+            + 12
+        )
 
     def bind_stage(self, feature_state: PropellerFeatureState, stage: str) -> None:
         self._feature_state = feature_state
@@ -1940,6 +1966,7 @@ class DistributionEditorWidget(QWidget):
         for row_index, point in enumerate(distribution.control_points):
             self.table.setItem(row_index, 0, QTableWidgetItem(f"{point.eta:.3f}"))
             self.table.setItem(row_index, 1, QTableWidgetItem(f"{point.value:.4f}"))
+        self.ensure_minimum_visible_rows()
         self._loading = False
 
     def _on_table_item_changed(self, _item: QTableWidgetItem) -> None:
@@ -3877,6 +3904,7 @@ class AdvancedPropellerWorkspace(QWidget):
             typography.apply(editor.table, TypographyRole.MONO_LOG)
             typography.apply(editor.add_button, TypographyRole.BODY)
             typography.apply(editor.remove_button, TypographyRole.BODY)
+            editor.ensure_minimum_visible_rows()
         for widget in self.findChildren(QLabel):
             role = TypographyRole.PANEL_HEADER if widget.objectName().endswith("Title") else TypographyRole.BODY
             typography.apply(widget, role)
@@ -4092,8 +4120,8 @@ class AdvancedPropellerWorkspace(QWidget):
         layout = QVBoxLayout(page)
         layout.setContentsMargins(12, 12, 12, 12)
         layout.setSpacing(8)
-        title = QLabel("Hub Blend", page)
-        title.setObjectName("HubBlendTitle")
+        title = QLabel("Hub Cylinder", page)
+        title.setObjectName("HubCylinderTitle")
         layout.addWidget(title)
 
         form_container = QFrame(page)
@@ -4105,8 +4133,8 @@ class AdvancedPropellerWorkspace(QWidget):
         controls = (
             ("Hub Radius Ratio", "hub_radius_ratio", self._make_double_spin(0.10, 0.45, hub.hub_radius_ratio, 0.01)),
             ("Hub Length Ratio", "hub_length_ratio", self._make_double_spin(0.08, 0.70, hub.hub_length_ratio, 0.01)),
-            ("Fore Profile Split", "fore_profile_split", self._make_double_spin(0.05, 0.90, hub.fore_profile_split, 0.01)),
-            ("Aft Profile Split", "aft_profile_split", self._make_double_spin(0.05, 0.95, hub.aft_profile_split, 0.01)),
+            ("Fore Length Share", "fore_profile_split", self._make_double_spin(0.05, 0.90, hub.fore_profile_split, 0.01)),
+            ("Aft Length Share", "aft_profile_split", self._make_double_spin(0.05, 0.95, hub.aft_profile_split, 0.01)),
             ("Root Cutback Start", "root_cutback_start", self._make_double_spin(0.01, 0.60, hub.root_cutback_start, 0.01)),
             ("Root LE Blend", "root_le_blend_ratio", self._make_double_spin(0.0, 0.20, hub.root_le_blend_ratio, 0.005)),
             ("Root TE Blend", "root_te_blend_ratio", self._make_double_spin(0.0, 0.20, hub.root_te_blend_ratio, 0.005)),

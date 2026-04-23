@@ -646,20 +646,12 @@ fn build_hub_stage(state: &PropellerFeatureState) -> Result<HubArtifact, String>
     let aft_len = length * (aft_share / share_sum);
     let ring_points = state.preview_settings.tessellation_cols.max(48);
     let ring_count = 8usize;
-    let end_radius = radius * 0.12;
 
     let mut hub_rings = Vec::new();
     for index in 0..ring_count {
         let t = index as f64 / (ring_count.saturating_sub(1).max(1) as f64);
         let z = -fore_len + t * (fore_len + aft_len);
-        let profile = if t <= 0.5 {
-            let local = t / 0.5;
-            end_radius + (radius - end_radius) * local.sin().powf(0.9)
-        } else {
-            let local = (t - 0.5) / 0.5;
-            end_radius + (radius - end_radius) * (1.0 - local).sin().powf(0.9)
-        };
-        hub_rings.push(circle_ring(profile.max(end_radius), z, ring_points));
+        hub_rings.push(circle_ring(radius, z, ring_points));
     }
 
     let fore_center = [0.0, 0.0, -fore_len];
@@ -1638,6 +1630,35 @@ mod tests {
         let aft_alignment = average_alignment(&hub_aft_mesh, |_| [0.0, 0.0, 1.0])
             .expect("aft cap should produce orientation samples");
         assert!(aft_alignment > 0.95);
+    }
+
+    #[test]
+    fn hub_stage_builds_cylindrical_profile() {
+        reset_build_cache();
+        let state = default_feature_state("test-node-hub-cylinder");
+        let hub_artifact = build_hub_stage(&state).expect("hub stage should succeed");
+
+        let expected_radius = state.global_parameters.radius
+            * clamp(state.hub_parameters.hub_radius_ratio, 0.10, 0.45);
+        let length = state.global_parameters.radius
+            * 2.0
+            * clamp(state.hub_parameters.hub_length_ratio, 0.08, 0.70);
+        let fore_share = clamp(state.hub_parameters.fore_profile_split, 0.05, 0.95);
+        let aft_share = clamp(state.hub_parameters.aft_profile_split, 0.05, 0.95);
+        let share_sum = fore_share + aft_share;
+        let expected_fore_z = -length * (fore_share / share_sum);
+        let expected_aft_z = length * (aft_share / share_sum);
+
+        assert_eq!(hub_artifact.hub_rings.len(), 8);
+        assert!((hub_artifact.hub_rings.first().unwrap()[0][2] - expected_fore_z).abs() < 1e-6);
+        assert!((hub_artifact.hub_rings.last().unwrap()[0][2] - expected_aft_z).abs() < 1e-6);
+
+        for ring in &hub_artifact.hub_rings {
+            for point in &ring[..ring.len().saturating_sub(1)] {
+                let radial = length3([point[0], point[1], 0.0]);
+                assert!((radial - expected_radius).abs() < 1e-6);
+            }
+        }
     }
 
     #[test]

@@ -21,7 +21,7 @@ STAGE_LABELS: dict[str, str] = {
     "profile_configurator": "Profile Configurator",
     "section_placement": "Section Placement",
     "tip": "Tip Surface",
-    "hub": "Hub Blend",
+    "hub": "Hub Cylinder",
     "pattern": "Pattern",
     "blade_preview": "Blade Preview",
     "diagnostics": "Diagnostics",
