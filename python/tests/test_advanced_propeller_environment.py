@@ -241,8 +241,12 @@ def test_advanced_propeller_workspace_rebuilds_after_tip_and_hub_edits(window, q
         tuple(workspace.session.last_result.model_metadata.bounds_max),
     )
 
+    workspace._update_hub("hub_radius_ratio", 0.16, "hub")
+    qtbot.waitUntil(lambda: workspace.session.feature_state.dirty_stages == [], timeout=6000)
+
     assert after_tip_apex != initial_apex
     assert after_hub_bounds != after_tip_bounds
+    assert "center_surface" in workspace.session.last_result.built_stages
     assert workspace.session.last_result.model_metadata.source == "truck_tessellation"
 
 

@@ -317,11 +317,18 @@ fn build_model_internal(
         .unwrap_or(0);
     let state = &request.feature_state;
     let cached_artifacts = load_cached_artifacts(&state.node_id);
-    let start_index = if start_index > 0 && cached_artifacts.is_none() {
+    let mut start_index = if start_index > 0 && cached_artifacts.is_none() {
         0
     } else {
         start_index
     };
+    if start_index > 0 {
+        if let Some(cache) = cached_artifacts.as_ref() {
+            if !center_surface_matches_state(state, &cache.center_surface) {
+                start_index = 0;
+            }
+        }
+    }
     let mut timings = BTreeMap::new();
 
     let center_surface = if start_index > 0 {
@@ -1426,6 +1433,33 @@ fn merge_radial_series(
     merged
 }
 
+fn center_surface_matches_state(
+    state: &PropellerFeatureState,
+    artifact: &CenterSurfaceArtifact,
+) -> bool {
+    let expected = sample_center_stations(state, state.preview_settings.span_samples.max(10));
+    artifact.stations.len() == expected.len()
+        && artifact
+            .stations
+            .iter()
+            .zip(expected.iter())
+            .all(|(left, right)| stations_are_close(left, right))
+}
+
+fn stations_are_close(left: &Station, right: &Station) -> bool {
+    floats_are_close(left.eta, right.eta)
+        && floats_are_close(left.radius, right.radius)
+        && floats_are_close(left.rake, right.rake)
+        && floats_are_close(left.skew, right.skew)
+        && floats_are_close(left.chord, right.chord)
+        && floats_are_close(left.beta, right.beta)
+}
+
+fn floats_are_close(left: f64, right: f64) -> bool {
+    let scale = left.abs().max(right.abs()).max(1.0);
+    (left - right).abs() <= scale * 1e-9
+}
+
 fn record_timing(
     timings: &mut BTreeMap<String, f64>,
     start_index: usize,
@@ -1639,6 +1673,32 @@ mod tests {
                 "blade_preview".to_string(),
                 "diagnostics".to_string()
             ]
+        );
+    }
+
+    #[test]
+    fn hub_radius_dirty_stage_rebuilds_stale_center_surface() {
+        reset_build_cache();
+        let mut state = default_feature_state("test-node-hub-radius-cache");
+        build_model_internal(&PropellerBuildRequestDto {
+            feature_state: state.clone(),
+            dirty_stages: vec![],
+        })
+        .expect("warm build should succeed");
+
+        state.hub_parameters.hub_radius_ratio = 0.16;
+        let result = build_model_internal(&PropellerBuildRequestDto {
+            feature_state: state,
+            dirty_stages: vec!["hub".to_string()],
+        })
+        .expect("cached build should recover from stale blade-root stations");
+
+        assert_eq!(
+            result.built_stages,
+            STAGE_ORDER
+                .iter()
+                .map(|stage| (*stage).to_string())
+                .collect::<Vec<_>>()
         );
     }
 

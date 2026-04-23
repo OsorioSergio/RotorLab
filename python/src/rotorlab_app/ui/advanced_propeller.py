@@ -4286,7 +4286,8 @@ class AdvancedPropellerWorkspace(QWidget):
     def _update_hub(self, field_name: str, value, stage: str) -> None:
         setattr(self._session.feature_state.hub_parameters, field_name, value)
         self._sync_section_eta_constraints()
-        self._session.feature_state.mark_dirty_from_stage(stage)
+        dirty_stage = "center_surface" if field_name == "hub_radius_ratio" else stage
+        self._session.feature_state.mark_dirty_from_stage(dirty_stage)
         self._request_build(force_all=False)
 
     def _update_pattern(self, field_name: str, value, stage: str) -> None:
